@@ -1,34 +1,23 @@
 package socket
 
 import (
-	"log"
+	"nimble-voice-backend/server"
 
 	"github.com/gin-gonic/gin"
-	socketio "github.com/googollee/go-socket.io"
+	"github.com/shishir1290/gsocketio"
 )
 
-func InitSocketServer() (*socketio.Server, error) {
-	server := socketio.NewServer(nil)
+// Re-export core types from server package for seamless access
+type SocketServer = server.SocketServer
+type AuthContext = server.AuthContext
+type RoomEventPayload = server.RoomEventPayload
 
-	server.OnConnect("/", func(s socketio.Conn) error {
-		s.SetContext("")
-		log.Println("Socket connected:", s.ID())
-		return nil
-	})
-
-	server.OnError("/", func(s socketio.Conn, e error) {
-		log.Println("Socket error:", e)
-	})
-
-	server.OnDisconnect("/", func(s socketio.Conn, reason string) {
-		log.Println("Socket disconnected:", reason)
-	})
-
-	return server, nil
+// InitSocketServer initializes the pure Go Socket.IO v4 server instance
+func InitSocketServer(opts ...*gsocketio.Options) (*SocketServer, error) {
+	return server.NewSocketServer(opts...)
 }
 
-func SocketHandler(server *socketio.Server) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		server.ServeHTTP(c.Writer, c.Request)
-	}
+// SocketHandler returns a Gin-compatible handler function
+func SocketHandler(srv *SocketServer) gin.HandlerFunc {
+	return srv.GinHandler()
 }

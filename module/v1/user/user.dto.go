@@ -1,20 +1,17 @@
 package user
 
-type RegisterUserDto struct {
-	Name     string `json:"name" binding:"required"`
-	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required,min=6"`
-	Role     string `json:"role"`
-	StoreID  string `json:"store_id"`
-	BranchID string `json:"branch_id"`
+type UpdatePortfolioDto struct {
+	Name             *string `json:"name"`
+	NativeLanguage   *string `json:"nativeLanguage"`
+	LearningLanguage *string `json:"learningLanguage"`
+	CEFRLevel        *string `json:"cefrLevel"`
+	Location         *string `json:"location"`
 }
 
-type LoginUserDto struct {
-	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required"`
-}
-
-type LoginResponseDto struct {
-	Token string      `json:"token"`
-	User  interface{} `json:"user"`
+type UserStatsResponse struct {
+	HoursSpokenThisMonth  float64 `json:"hoursSpokenThisMonth"`
+	TotalRoomsJoined      int64   `json:"totalRoomsJoined"`
+	FrequentPartnersCount int     `json:"frequentPartnersCount"`
+	CurrentStreakDays     int     `json:"currentStreakDays"`
+	KarmaPoints           int     `json:"karmaPoints"`
 }

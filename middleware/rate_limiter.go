@@ -15,6 +15,12 @@ func RateLimiter() gin.HandlerFunc {
 	})
 
 	return func(c *gin.Context) {
+		// Bypass rate limiter for socket.io polling and streaming
+		if c.Request.URL.Path == "/socket.io" || (len(c.Request.URL.Path) > 10 && c.Request.URL.Path[:11] == "/socket.io/") {
+			c.Next()
+			return
+		}
+
 		httpError := tollbooth.LimitByRequest(lmt, c.Writer, c.Request)
 		if httpError != nil {
 			c.AbortWithStatusJSON(httpError.StatusCode, gin.H{

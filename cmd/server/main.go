@@ -14,6 +14,7 @@ import (
 	"nimble-voice-backend/db"
 	"nimble-voice-backend/module"
 	"nimble-voice-backend/pkg/logger"
+	"nimble-voice-backend/server"
 	"nimble-voice-backend/utils/jwt"
 )
 
@@ -40,11 +41,24 @@ func main() {
 		log.Fatalf("Postgres connection error: %v", err)
 	}
 
-	// 5. Setup Router
-	router := module.SetupRouter(cfg, database)
+	// 5. Initialize Pure Go Socket.IO v4 Server (gsocketio)
+	sockServer, err := server.NewSocketServer()
+	if err != nil {
+		log.Fatalf("Socket server init error: %v", err)
+	}
+	defer sockServer.Close()
 
-	// 6. Initialize HTTP Server
-	server := &http.Server{
+	go func() {
+		if err := sockServer.Serve(); err != nil {
+			log.Printf("Socket.IO server loop ended: %v", err)
+		}
+	}()
+
+	// 6. Setup Router with CORS and Socket.IO handler mounted
+	router := module.SetupRouter(cfg, database, sockServer)
+
+	// 7. Initialize HTTP Server
+	httpServer := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      router,
 		ReadTimeout:  60 * time.Second,
@@ -53,12 +67,13 @@ func main() {
 
 	go func() {
 		fmt.Printf("🚀 Server running on port :%s (Mode: %s)\n", cfg.Port, cfg.Environment)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		fmt.Println("⚡ Real-Time Socket.IO v4 mounted on /socket.io/")
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server Listen error: %v", err)
 		}
 	}()
 
-	// 7. Graceful Shutdown
+	// 8. Graceful Shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
@@ -66,7 +81,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil {
+	if err := httpServer.Shutdown(ctx); err != nil {
 		log.Fatalf("Server forced to shutdown: %v", err)
 	}
 	log.Println("Server gracefully stopped")

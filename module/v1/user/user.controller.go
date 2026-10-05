@@ -1,8 +1,9 @@
 package user
 
 import (
+	"net/http"
+
 	"nimble-voice-backend/middleware"
-	"nimble-voice-backend/utils/fileutil"
 	"nimble-voice-backend/utils/httpx"
 
 	"github.com/gin-gonic/gin"
@@ -17,59 +18,40 @@ func NewUserController(service UserServiceInterface) UserController {
 }
 
 func UserRouter(router *gin.RouterGroup, controller UserController) {
-	// 1. User Registration
-	router.POST("/register", func(ctx *gin.Context) {
-		var data RegisterUserDto
-		if err := ctx.ShouldBindJSON(&data); err != nil {
-			ctx.JSON(400, gin.H{"status": 400, "error": err.Error()})
+	// PATCH /portfolio (Protected)
+	router.PATCH("/portfolio", middleware.Auth(), func(ctx *gin.Context) {
+		userID, ok := ctx.Get("user_id")
+		if !ok || userID == "" {
+			httpx.SendResponse(ctx, httpx.SendData(http.StatusUnauthorized, "User session not found"))
 			return
 		}
-		httpx.SendResponse(ctx, controller.service.Register(&data))
+
+		var dto UpdatePortfolioDto
+		if err := ctx.ShouldBindJSON(&dto); err != nil {
+			httpx.SendResponse(ctx, httpx.SendData(http.StatusBadRequest, "Invalid request payload", err.Error()))
+			return
+		}
+
+		response := controller.service.UpdatePortfolio(userID.(string), &dto)
+		httpx.SendResponse(ctx, response)
 	})
 
-	// 2. User Login
-	router.POST("/login", func(ctx *gin.Context) {
-		var data LoginUserDto
-		if err := ctx.ShouldBindJSON(&data); err != nil {
-			ctx.JSON(400, gin.H{"status": 400, "error": err.Error()})
+	// GET /stats (Protected)
+	router.GET("/stats", middleware.Auth(), func(ctx *gin.Context) {
+		userID, ok := ctx.Get("user_id")
+		if !ok || userID == "" {
+			httpx.SendResponse(ctx, httpx.SendData(http.StatusUnauthorized, "User session not found"))
 			return
 		}
-		httpx.SendResponse(ctx, controller.service.Login(&data))
+
+		response := controller.service.GetUserStats(userID.(string))
+		httpx.SendResponse(ctx, response)
 	})
 
-	// 3. User Profile (JWT Protected)
-	router.GET("/profile", middleware.Auth(), func(ctx *gin.Context) {
-		userID, _ := ctx.Get("user_id")
-		httpx.SendResponse(ctx, controller.service.GetProfile(userID.(string)))
-	})
-
-	// 4. Avatar Image Upload (multipart/form-data)
-	router.POST("/upload-avatar", middleware.Auth(), func(ctx *gin.Context) {
-		// Read file from the 'avatar' multipart form key
-		file, err := ctx.FormFile("avatar")
-		if err != nil {
-			ctx.JSON(400, gin.H{
-				"status":  400,
-				"message": "Avatar image file is required in 'avatar' field",
-				"error":   err.Error(),
-			})
-			return
-		}
-
-		// Validate & save image into ./uploads/avatars directory
-		imageURL, err := fileutil.SaveImage(file, "avatars")
-		if err != nil {
-			ctx.JSON(400, gin.H{
-				"status":  400,
-				"message": "Image upload failed",
-				"error":   err.Error(),
-			})
-			return
-		}
-
-		// Update avatar URL in the database
-		userID, _ := ctx.Get("user_id")
-		res := controller.service.UpdateAvatar(userID.(string), imageURL)
-		httpx.SendResponse(ctx, res)
+	// GET /:userId (Public learner card)
+	router.GET("/:userId", func(ctx *gin.Context) {
+		targetUserID := ctx.Param("userId")
+		response := controller.service.GetPublicProfile(targetUserID)
+		httpx.SendResponse(ctx, response)
 	})
 }

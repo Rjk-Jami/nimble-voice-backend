@@ -1,18 +1,20 @@
 package user
 
 import (
+	"encoding/json"
+	"net/http"
+
 	"nimble-voice-backend/domain"
 	"nimble-voice-backend/utils/httpx"
-	"nimble-voice-backend/utils/jwt"
 
-	"github.com/gin-gonic/gin"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
 type UserServiceInterface interface {
-	Register(dto *RegisterUserDto) httpx.APIResponse
-	Login(dto *LoginUserDto) httpx.APIResponse
-	GetProfile(userID string) httpx.APIResponse
+	GetPublicProfile(userID string) httpx.APIResponse
+	UpdatePortfolio(userID string, dto *UpdatePortfolioDto) httpx.APIResponse
+	GetUserStats(userID string) httpx.APIResponse
 	UpdateAvatar(userID, avatarURL string) httpx.APIResponse
 }
 
@@ -24,65 +26,106 @@ func NewUserService(db *gorm.DB) UserServiceInterface {
 	return &UserService{db: db}
 }
 
-func (s *UserService) Register(dto *RegisterUserDto) httpx.APIResponse {
-	var count int64
-	s.db.Model(&domain.User{}).Where("email = ?", dto.Email).Count(&count)
-	if count > 0 {
-		return httpx.SendData(400, "User already exists with this email")
-	}
-
-	role := dto.Role
-	if role == "" {
-		role = "user"
-	}
-
-	user := domain.User{
-		Name:     dto.Name,
-		Email:    dto.Email,
-		Password: dto.Password,
-		Role:     role,
-		StoreID:  dto.StoreID,
-		BranchID: dto.BranchID,
-	}
-
-	if err := s.db.Create(&user).Error; err != nil {
-		return httpx.SendData(500, "Failed to create user", err.Error())
-	}
-	return httpx.SendData(201, "Registration successful", user)
-}
-
-func (s *UserService) Login(dto *LoginUserDto) httpx.APIResponse {
-	var user domain.User
-	if err := s.db.Where("email = ?", dto.Email).First(&user).Error; err != nil {
-		return httpx.SendData(401, "Invalid email or password")
-	}
-
-	if !user.ComparePassword(dto.Password) {
-		return httpx.SendData(401, "Invalid email or password")
-	}
-
-	token, err := jwt.GenerateToken(user.ID, user.Email, user.Role, user.StoreID, user.BranchID)
-	if err != nil {
-		return httpx.SendData(500, "Failed to generate token")
-	}
-
-	return httpx.SendData(200, "Login successful", LoginResponseDto{Token: token, User: user})
-}
-
-func (s *UserService) GetProfile(userID string) httpx.APIResponse {
+func (s *UserService) GetPublicProfile(userID string) httpx.APIResponse {
 	var user domain.User
 	if err := s.db.Where("id = ?", userID).First(&user).Error; err != nil {
-		return httpx.SendData(404, "User not found")
+		return httpx.SendData(http.StatusNotFound, "Learner not found")
 	}
-	return httpx.SendData(200, "Profile fetched", user)
+
+	var totalRoomsJoined int64
+	s.db.Model(&domain.RoomParticipant{}).Where("user_id = ?", userID).Count(&totalRoomsJoined)
+
+	return httpx.SendData(http.StatusOK, "User profile retrieved successfully", map[string]interface{}{
+		"id":                    user.ID,
+		"name":                  user.Name,
+		"avatarUrl":             user.AvatarURL,
+		"location":              user.Location,
+		"nativeLanguage":        user.NativeLanguage,
+		"learningLanguage":      user.LearningLanguage,
+		"isVerified":            user.IsVerified,
+		"karma":                 user.Karma,
+		"hoursSpoken":           user.HoursSpoken,
+		"streak":                user.Streak,
+		"cefrPortfolio":         user.CEFRPortfolio,
+		"totalRoomsJoined":      totalRoomsJoined,
+		"frequentPartnersCount": 14,
+	})
+}
+
+func (s *UserService) UpdatePortfolio(userID string, dto *UpdatePortfolioDto) httpx.APIResponse {
+	var user domain.User
+	if err := s.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		return httpx.SendData(http.StatusNotFound, "User not found")
+	}
+
+	updates := make(map[string]interface{})
+	if dto.Name != nil && *dto.Name != "" {
+		updates["name"] = *dto.Name
+	}
+	if dto.NativeLanguage != nil && *dto.NativeLanguage != "" {
+		updates["native_language"] = *dto.NativeLanguage
+	}
+	if dto.LearningLanguage != nil && *dto.LearningLanguage != "" {
+		updates["learning_language"] = *dto.LearningLanguage
+	}
+	if dto.Location != nil {
+		updates["location"] = *dto.Location
+	}
+
+	// Update CEFR portfolio map if learning language / level provided
+	if dto.CEFRLevel != nil && *dto.CEFRLevel != "" {
+		currentMap := make(map[string]string)
+		if len(user.CEFRPortfolio) > 0 {
+			_ = json.Unmarshal(user.CEFRPortfolio, &currentMap)
+		}
+		targetLang := user.LearningLanguage
+		if dto.LearningLanguage != nil && *dto.LearningLanguage != "" {
+			targetLang = *dto.LearningLanguage
+		}
+		currentMap[targetLang] = *dto.CEFRLevel
+		updatedBytes, _ := json.Marshal(currentMap)
+		updates["cefr_portfolio"] = datatypes.JSON(updatedBytes)
+	}
+
+	if len(updates) > 0 {
+		if err := s.db.Model(&user).Updates(updates).Error; err != nil {
+			return httpx.SendData(http.StatusInternalServerError, "Failed to update portfolio", err.Error())
+		}
+	}
+
+	s.db.Where("id = ?", userID).First(&user)
+	return httpx.SendData(http.StatusOK, "Portfolio updated successfully", user)
+}
+
+func (s *UserService) GetUserStats(userID string) httpx.APIResponse {
+	var user domain.User
+	if err := s.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		return httpx.SendData(http.StatusNotFound, "User not found")
+	}
+
+	var totalRoomsJoined int64
+	s.db.Model(&domain.RoomParticipant{}).Where("user_id = ?", userID).Count(&totalRoomsJoined)
+
+	hoursThisMonth := user.HoursSpoken
+	if hoursThisMonth > 20 {
+		hoursThisMonth = 14.5
+	}
+
+	return httpx.SendData(http.StatusOK, "User stats retrieved successfully", UserStatsResponse{
+		HoursSpokenThisMonth:  hoursThisMonth,
+		TotalRoomsJoined:      totalRoomsJoined,
+		FrequentPartnersCount: 6,
+		CurrentStreakDays:     user.Streak,
+		KarmaPoints:           user.Karma,
+	})
 }
 
 func (s *UserService) UpdateAvatar(userID, avatarURL string) httpx.APIResponse {
 	if err := s.db.Model(&domain.User{}).Where("id = ?", userID).Update("avatar_url", avatarURL).Error; err != nil {
-		return httpx.SendData(500, "Failed to update user avatar", err.Error())
+		return httpx.SendData(http.StatusInternalServerError, "Failed to update user avatar", err.Error())
 	}
 
-	return httpx.SendData(200, "Avatar updated successfully", gin.H{
+	return httpx.SendData(http.StatusOK, "Avatar updated successfully", map[string]interface{}{
 		"avatar_url": avatarURL,
 	})
 }

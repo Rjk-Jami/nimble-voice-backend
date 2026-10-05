@@ -13,7 +13,7 @@ Whenever you are tasked with creating a new module, modifying an existing one, w
 - **HTTP Web Framework:** [Gin Web Framework](https://github.com/gin-gonic/gin) (`github.com/gin-gonic/gin`)
 - **Primary Database ORM:** [GORM](https://gorm.io/) (`gorm.io/gorm` with `gorm.io/driver/postgres`)
 - **Primary Key Strategy:** **CUID** (`github.com/lucsky/cuid`) strings across all domain models
-- **Real-Time Communication:** [go-socket.io](https://github.com/googollee/go-socket.io) (`github.com/googollee/go-socket.io`) for audio room events, signaling, and participant presence
+- **Real-Time Communication:** [gsocketio](https://github.com/shishir1290/gsocketio) (`github.com/shishir1290/gsocketio`) — pure Go Socket.IO v4 / Engine.IO v4 zero-dependency server for audio room events, signaling, and participant presence
 - **Rate Limiting:** [Tollbooth](https://github.com/didip/tollbooth/v7) (`github.com/didip/tollbooth/v7`)
 - **Authentication & Security:** JWT (`github.com/golang-jwt/jwt/v5`) + Bcrypt (`golang.org/x/crypto/bcrypt`)
 - **Structured Logging:** Uber Zap (`go.uber.org/zap`) with Lumberjack log rotation (`gopkg.in/natefinch/lumberjack.v2`)
