@@ -44,16 +44,16 @@ func (s *StatsService) GetNetworkStats() httpx.APIResponse {
 
 	// If in local/dev and count is minimal, provide a minimum base count for UI fidelity
 	displayOnline := onlineUsers
-	if displayOnline < 1400 {
-		displayOnline = 1420 + onlineUsers
+	if displayOnline < 0 {
+		displayOnline = 0 + onlineUsers
 	}
 	displayRooms := activeRooms
-	if displayRooms < 60 {
-		displayRooms = 68 + activeRooms
+	if displayRooms < 0 {
+		displayRooms = 0 + activeRooms
 	}
 	displayLangs := liveLanguages
-	if displayLangs < 10 {
-		displayLangs = 14 + liveLanguages
+	if displayLangs < 0 {
+		displayLangs = 0 + liveLanguages
 	}
 
 	return httpx.SendData(http.StatusOK, "Network stats retrieved successfully", NetworkStatsResponse{

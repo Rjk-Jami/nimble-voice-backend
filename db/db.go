@@ -8,6 +8,7 @@ import (
 	"nimble-voice-backend/config"
 	"nimble-voice-backend/domain"
 
+	"gorm.io/datatypes"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -48,6 +49,9 @@ func ConnectPostgres(cfg *config.Config) (*gorm.DB, error) {
 
 	// Seed topic prompts if empty
 	seedTopicPrompts(db)
+
+	// Seed default community rooms if empty
+	seedDefaultRooms(db)
 
 	return db, nil
 }
@@ -93,4 +97,67 @@ func seedTopicPrompts(db *gorm.DB) {
 	for _, p := range defaultPrompts {
 		_ = db.Create(&p)
 	}
+}
+
+func seedDefaultRooms(db *gorm.DB) {
+	var count int64
+	db.Model(&domain.Room{}).Count(&count)
+	if count > 0 {
+		return
+	}
+
+	host := domain.User{
+		ID:               "host-community",
+		Name:             "Nimble Community Host",
+		AvatarURL:        "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+		Location:         "Global",
+		NativeLanguage:   "English",
+		LearningLanguage: "Spanish",
+		IsVerified:       true,
+		Role:             "user",
+	}
+	_ = db.FirstOrCreate(&host, domain.User{ID: "host-community"})
+
+	englishRoom := domain.Room{
+		ID:                 "room-english-lounge",
+		Title:              "Global English Lounge: Casual chat, culture & daily life",
+		Topic:              "Casual chat, culture & daily life",
+		Language:           "English",
+		Flag:               "🇬🇧",
+		CEFRLevel:          "B1",
+		LevelLabel:         "Intermediate B1",
+		MaxSlots:           6,
+		CurrentSlots:       0,
+		TopicTag:           "Casual & Life",
+		Tags:               datatypes.JSON([]byte(`["Casual & Life", "Culture"]`)),
+		Status:             "LIVE",
+		IsBeginnerFriendly: true,
+		HasFreeSeats:       true,
+		HasNativeSpeaker:   false,
+		IsLive:             true,
+		HostID:             host.ID,
+	}
+
+	spanishRoom := domain.Room{
+		ID:                 "room-spanish-corner",
+		Title:              "Spanish Practice Corner: Saludos, viajes y vida cotidiana",
+		Topic:              "Saludos, viajes y vida cotidiana",
+		Language:           "Spanish",
+		Flag:               "🇪🇸",
+		CEFRLevel:          "A2",
+		LevelLabel:         "Beginner A2",
+		MaxSlots:           5,
+		CurrentSlots:       0,
+		TopicTag:           "Grammar & Vocab",
+		Tags:               datatypes.JSON([]byte(`["Grammar & Vocab", "Beginners"]`)),
+		Status:             "LIVE",
+		IsBeginnerFriendly: true,
+		HasFreeSeats:       true,
+		HasNativeSpeaker:   false,
+		IsLive:             true,
+		HostID:             host.ID,
+	}
+
+	_ = db.Create(&englishRoom)
+	_ = db.Create(&spanishRoom)
 }
