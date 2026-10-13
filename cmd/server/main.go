@@ -12,13 +12,25 @@ import (
 
 	"nimble-voice-backend/config"
 	"nimble-voice-backend/db"
+	_ "nimble-voice-backend/docs"
 	"nimble-voice-backend/module"
 	"nimble-voice-backend/pkg/logger"
 	"nimble-voice-backend/server"
 	"nimble-voice-backend/utils/jwt"
 )
 
+// @title                      Nimble Voice Backend API
+// @version                    1.0.0
+// @description                Real-time audio rooms, voice signaling, and language practice platform backend.
+// @contact.name               Nimble Voice Engineering Team
+// @host                       localhost:8080
+// @BasePath                   /api/v1
+// @securityDefinitions.apikey BearerAuth
+// @in                         header
+// @name                       Authorization
+// @description                Type "Bearer" followed by a space and your JWT token.
 func main() {
+
 	// 1. Load configuration
 	cfg, err := config.LoadConfig()
 	if err != nil {

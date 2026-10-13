@@ -1,17 +1,22 @@
 package module
 
 import (
+	"net/http"
 	"time"
 
 	"nimble-voice-backend/config"
+	_ "nimble-voice-backend/docs"
 	"nimble-voice-backend/middleware"
 	route_v1 "nimble-voice-backend/module/v1"
 	"nimble-voice-backend/server"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 	"gorm.io/gorm"
 )
+
 
 func SetupRouter(cfg *config.Config, db *gorm.DB, socketServer ...*server.SocketServer) *gin.Engine {
 	router := gin.New()
@@ -41,6 +46,20 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, socketServer ...*server.Socket
 	router.GET("/health", func(ctx *gin.Context) {
 		ctx.JSON(200, gin.H{"status": "healthy", "time": time.Now().UTC()})
 	})
+
+	// Swagger API Documentation UI
+	router.GET("/swagger", func(ctx *gin.Context) {
+		ctx.Redirect(http.StatusMovedPermanently, "/swagger/index.html")
+	})
+	router.GET("/swagger/*any", ginSwagger.CustomWrapHandler(&ginSwagger.Config{
+		URL:                      "/swagger/doc.json",
+		DocExpansion:             "none", // Keeps module tags collapsed initially
+		DefaultModelsExpandDepth: -1,     // Hides default model schemas at bottom
+		DeepLinking:              true,   // Deep link to specific endpoints
+		PersistAuthorization:     true,   // Retains Bearer token across refreshes
+		Title:                    "Nimble Voice API Docs",
+	}, swaggerFiles.Handler))
+
 
 	// Mount Socket.IO v4 handler if provided
 	if len(socketServer) > 0 && socketServer[0] != nil {

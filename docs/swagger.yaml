@@ -1,0 +1,908 @@
+basePath: /api/v1
+definitions:
+  module_v1_auth.AuthResponse:
+    properties:
+      token:
+        example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        type: string
+      user: {}
+    type: object
+  module_v1_auth.GuestAuthDto:
+    properties:
+      learningLanguage:
+        example: English
+        type: string
+      name:
+        example: Alex Guest
+        type: string
+      nativeLanguage:
+        example: Spanish
+        type: string
+    type: object
+  module_v1_auth.LoginDto:
+    properties:
+      email:
+        example: john@example.com
+        type: string
+      password:
+        example: secret123
+        type: string
+    required:
+    - email
+    - password
+    type: object
+  module_v1_auth.RegisterDto:
+    properties:
+      email:
+        example: john@example.com
+        type: string
+      learningLanguage:
+        example: English
+        type: string
+      name:
+        example: John Doe
+        minLength: 2
+        type: string
+      nativeLanguage:
+        example: Spanish
+        type: string
+      password:
+        example: secret123
+        minLength: 6
+        type: string
+    required:
+    - email
+    - name
+    - password
+    type: object
+  module_v1_auth.SessionResponse:
+    properties:
+      authenticated:
+        example: true
+        type: boolean
+      user: {}
+    type: object
+  module_v1_chat.ChatMessagesResponse:
+    properties:
+      messages: {}
+    type: object
+  module_v1_chat.SendMessageDto:
+    properties:
+      content:
+        example: Hello everyone, great to practice speaking here!
+        maxLength: 500
+        minLength: 1
+        type: string
+      type:
+        description: TEXT, SYSTEM, IDIOM, REACTION
+        example: TEXT
+        type: string
+    required:
+    - content
+    type: object
+  module_v1_room.CreateRoomDto:
+    properties:
+      cefrLevel:
+        example: B1
+        type: string
+      description:
+        example: Practice casual conversation and fluency
+        type: string
+      isBeginnerFriendly:
+        example: true
+        type: boolean
+      language:
+        example: en
+        type: string
+      levelLabel:
+        example: Intermediate
+        type: string
+      maxSlots:
+        example: 6
+        type: integer
+      room_key:
+        example: ""
+        type: string
+      tags:
+        example:
+        - english
+        - speaking
+        - fluency
+        items:
+          type: string
+        type: array
+      title:
+        example: Daily English Practice
+        maxLength: 100
+        minLength: 3
+        type: string
+      topic:
+        example: Weekend plans and hobbies
+        type: string
+      topicTag:
+        example: Casual Chat
+        type: string
+    required:
+    - language
+    - title
+    type: object
+  module_v1_room.JoinRoomDto:
+    properties:
+      password:
+        example: ""
+        type: string
+    type: object
+  module_v1_room.JoinRoomResponse:
+    properties:
+      currentSlots:
+        example: 3
+        type: integer
+      maxSlots:
+        example: 6
+        type: integer
+      peerToken:
+        example: pt_ckz1234567890
+        type: string
+      roomId:
+        example: ckz1234567890
+        type: string
+      success:
+        example: true
+        type: boolean
+    type: object
+  module_v1_room.LeaveRoomResponse:
+    properties:
+      remainingSlots:
+        example: 2
+        type: integer
+      roomId:
+        example: ckz1234567890
+        type: string
+      success:
+        example: true
+        type: boolean
+    type: object
+  module_v1_room.PaginationMeta:
+    properties:
+      limit:
+        example: 20
+        type: integer
+      page:
+        example: 1
+        type: integer
+      total:
+        example: 25
+        type: integer
+      totalPages:
+        example: 2
+        type: integer
+    type: object
+  module_v1_room.RoomListResponse:
+    properties:
+      pagination:
+        $ref: '#/definitions/module_v1_room.PaginationMeta'
+      rooms: {}
+    type: object
+  module_v1_room.UpdateRoomDto:
+    properties:
+      maxSlots:
+        example: 8
+        type: integer
+      status:
+        description: LIVE, WAITING, ENDED
+        example: LIVE
+        type: string
+      title:
+        example: Updated English Chat
+        type: string
+      topic:
+        example: Travel and culture
+        type: string
+    type: object
+  module_v1_stats.NetworkStatsResponse:
+    properties:
+      activeRoomsCount:
+        example: 18
+        type: integer
+      liveLanguagesCount:
+        example: 6
+        type: integer
+      onlineCount:
+        example: 142
+        type: integer
+    type: object
+  module_v1_topic.CategoryDeck:
+    properties:
+      category:
+        example: Travel
+        type: string
+      icon:
+        example: Plane
+        type: string
+      prompts:
+        items:
+          $ref: '#/definitions/module_v1_topic.PromptItem'
+        type: array
+    type: object
+  module_v1_topic.PromptItem:
+    properties:
+      level:
+        example: Intermediate
+        type: string
+      tag:
+        example: Vacations
+        type: string
+      title:
+        example: Describe your favorite travel destination
+        type: string
+    type: object
+  module_v1_user.UpdatePortfolioDto:
+    properties:
+      cefrLevel:
+        example: B2
+        type: string
+      learningLanguage:
+        example: English
+        type: string
+      location:
+        example: Madrid, Spain
+        type: string
+      name:
+        example: Alex Rivera
+        type: string
+      nativeLanguage:
+        example: Spanish
+        type: string
+    type: object
+  module_v1_user.UserStatsResponse:
+    properties:
+      currentStreakDays:
+        example: 5
+        type: integer
+      frequentPartnersCount:
+        example: 8
+        type: integer
+      hoursSpokenThisMonth:
+        example: 14.5
+        type: number
+      karmaPoints:
+        example: 240
+        type: integer
+      totalRoomsJoined:
+        example: 32
+        type: integer
+    type: object
+  nimble-voice-backend_utils_httpx.APIResponse:
+    properties:
+      data: {}
+      message:
+        type: string
+      status_code:
+        type: integer
+    type: object
+host: localhost:8080
+info:
+  contact:
+    name: Nimble Voice Engineering Team
+  description: Real-time audio rooms, voice signaling, and language practice platform
+    backend.
+  title: Nimble Voice Backend API
+  version: 1.0.0
+paths:
+  /auth/guest:
+    post:
+      consumes:
+      - application/json
+      description: Creates a temporary guest profile for instant audio room testing
+      parameters:
+      - description: Guest preferences
+        in: body
+        name: payload
+        schema:
+          $ref: '#/definitions/module_v1_auth.GuestAuthDto'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+            - properties:
+                data:
+                  $ref: '#/definitions/module_v1_auth.AuthResponse'
+              type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      summary: Create guest session
+      tags:
+      - Auth
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticates user credentials and returns a JWT Bearer token
+      parameters:
+      - description: User credentials
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/module_v1_auth.LoginDto'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+            - properties:
+                data:
+                  $ref: '#/definitions/module_v1_auth.AuthResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      summary: Login user
+      tags:
+      - Auth
+  /auth/profile:
+    get:
+      description: Retrieves the authenticated user profile and stats
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Get user profile
+      tags:
+      - Auth
+  /auth/register:
+    post:
+      consumes:
+      - application/json
+      description: Creates a new permanent user account
+      parameters:
+      - description: User registration details
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/module_v1_auth.RegisterDto'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+            - properties:
+                data:
+                  $ref: '#/definitions/module_v1_auth.AuthResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      summary: Register a new user
+      tags:
+      - Auth
+  /auth/session:
+    get:
+      description: Retrieves session info via Bearer token or session cookie
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+            - properties:
+                data:
+                  $ref: '#/definitions/module_v1_auth.SessionResponse'
+              type: object
+      summary: Get current session
+      tags:
+      - Auth
+  /rooms:
+    get:
+      description: Returns paginated list of active voice rooms filtered by language,
+        search query, or status
+      parameters:
+      - description: Filter by spoken language (e.g. en, es, fr)
+        in: query
+        name: lang
+        type: string
+      - description: Search keyword in title or topic
+        in: query
+        name: query
+        type: string
+      - description: Filter option
+        enum:
+        - all
+        - active
+        - free-seats
+        - beginner
+        - native
+        in: query
+        name: filter
+        type: string
+      - description: Page number (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Items per page (default 20, max 100)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+            - properties:
+                data:
+                  $ref: '#/definitions/module_v1_room.RoomListResponse'
+              type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      summary: Get voice rooms list
+      tags:
+      - Rooms
+    post:
+      consumes:
+      - application/json
+      description: Creates a new voice room and enrolls the authenticated host
+      parameters:
+      - description: Room configuration details
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/module_v1_room.CreateRoomDto'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a new voice room
+      tags:
+      - Rooms
+  /rooms/{id}:
+    delete:
+      description: Closes room session and cleans up active participants (Host only)
+      parameters:
+      - description: Room ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete / close voice room
+      tags:
+      - Rooms
+    get:
+      description: Returns details and active participants of a specific voice room
+      parameters:
+      - description: Room ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      summary: Get room details
+      tags:
+      - Rooms
+    patch:
+      consumes:
+      - application/json
+      description: Updates room properties such as title, topic, or status (Host only)
+      parameters:
+      - description: Room ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Update room fields
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/module_v1_room.UpdateRoomDto'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Update voice room
+      tags:
+      - Rooms
+  /rooms/{id}/join:
+    post:
+      consumes:
+      - application/json
+      description: Enrolls the user in the voice room and allocates an audio slot
+      parameters:
+      - description: Room ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Room access key / password if private
+        in: body
+        name: payload
+        schema:
+          $ref: '#/definitions/module_v1_room.JoinRoomDto'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+            - properties:
+                data:
+                  $ref: '#/definitions/module_v1_room.JoinRoomResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Join voice room
+      tags:
+      - Rooms
+  /rooms/{id}/leave:
+    post:
+      description: Removes the participant from the voice room and releases their
+        slot
+      parameters:
+      - description: Room ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+            - properties:
+                data:
+                  $ref: '#/definitions/module_v1_room.LeaveRoomResponse'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Leave voice room
+      tags:
+      - Rooms
+  /rooms/{id}/messages:
+    get:
+      description: Fetches the backchannel text chat history for a voice room
+      parameters:
+      - description: Room ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Number of messages to fetch (default 50)
+        in: query
+        name: limit
+        type: integer
+      - description: Cursor ISO timestamp to fetch messages prior to
+        in: query
+        name: before
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+            - properties:
+                data:
+                  $ref: '#/definitions/module_v1_chat.ChatMessagesResponse'
+              type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      summary: Get room chat messages
+      tags:
+      - Chat
+    post:
+      consumes:
+      - application/json
+      description: Sends a text message, reaction, or idiom prompt to the room's backchannel
+      parameters:
+      - description: Room ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Message payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/module_v1_chat.SendMessageDto'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Send backchannel chat message
+      tags:
+      - Chat
+  /stats/network:
+    get:
+      description: Returns real-time platform statistics including online members,
+        active rooms, and live languages
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+            - properties:
+                data:
+                  $ref: '#/definitions/module_v1_stats.NetworkStatsResponse'
+              type: object
+      summary: Get live platform stats
+      tags:
+      - Stats
+  /topics/prompts:
+    get:
+      description: Returns categorized conversation starter cards and icebreaker decks
+      parameters:
+      - description: Filter by topic category (e.g. Travel, Business, Tech)
+        in: query
+        name: category
+        type: string
+      - description: Filter by CEFR difficulty level (e.g. A2, B1, B2, C1)
+        in: query
+        name: level
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/module_v1_topic.CategoryDeck'
+                  type: array
+              type: object
+      summary: Get conversation topic prompts
+      tags:
+      - Topics
+  /users/{userId}:
+    get:
+      description: Returns public profile details of a speaker by user ID
+      parameters:
+      - description: User ID
+        in: path
+        name: userId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      summary: Get public learner card
+      tags:
+      - Users
+  /users/portfolio:
+    patch:
+      consumes:
+      - application/json
+      description: Updates learning languages, CEFR level, location, and name for
+        the user
+      parameters:
+      - description: Portfolio update fields
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/module_v1_user.UpdatePortfolioDto'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Update user portfolio
+      tags:
+      - Users
+  /users/stats:
+    get:
+      description: Returns monthly spoken hours, streak days, karma points, and room
+        history
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+            - properties:
+                data:
+                  $ref: '#/definitions/module_v1_user.UserStatsResponse'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/nimble-voice-backend_utils_httpx.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Get user statistics
+      tags:
+      - Users
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer" followed by a space and your JWT token.
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

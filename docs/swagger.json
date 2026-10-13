@@ -1,0 +1,1401 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Real-time audio rooms, voice signaling, and language practice platform backend.",
+        "title": "Nimble Voice Backend API",
+        "contact": {
+            "name": "Nimble Voice Engineering Team"
+        },
+        "version": "1.0.0"
+    },
+    "host": "localhost:8080",
+    "basePath": "/api/v1",
+    "paths": {
+        "/auth/guest": {
+            "post": {
+                "description": "Creates a temporary guest profile for instant audio room testing",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Create guest session",
+                "parameters": [
+                    {
+                        "description": "Guest preferences",
+                        "name": "payload",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/module_v1_auth.GuestAuthDto"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/module_v1_auth.AuthResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/login": {
+            "post": {
+                "description": "Authenticates user credentials and returns a JWT Bearer token",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Login user",
+                "parameters": [
+                    {
+                        "description": "User credentials",
+                        "name": "payload",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/module_v1_auth.LoginDto"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/module_v1_auth.AuthResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/profile": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Retrieves the authenticated user profile and stats",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Get user profile",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/register": {
+            "post": {
+                "description": "Creates a new permanent user account",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Register a new user",
+                "parameters": [
+                    {
+                        "description": "User registration details",
+                        "name": "payload",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/module_v1_auth.RegisterDto"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/module_v1_auth.AuthResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/session": {
+            "get": {
+                "description": "Retrieves session info via Bearer token or session cookie",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Get current session",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/module_v1_auth.SessionResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/rooms": {
+            "get": {
+                "description": "Returns paginated list of active voice rooms filtered by language, search query, or status",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Rooms"
+                ],
+                "summary": "Get voice rooms list",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by spoken language (e.g. en, es, fr)",
+                        "name": "lang",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search keyword in title or topic",
+                        "name": "query",
+                        "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "all",
+                            "active",
+                            "free-seats",
+                            "beginner",
+                            "native"
+                        ],
+                        "type": "string",
+                        "description": "Filter option",
+                        "name": "filter",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page number (default 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Items per page (default 20, max 100)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/module_v1_room.RoomListResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Creates a new voice room and enrolls the authenticated host",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Rooms"
+                ],
+                "summary": "Create a new voice room",
+                "parameters": [
+                    {
+                        "description": "Room configuration details",
+                        "name": "payload",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/module_v1_room.CreateRoomDto"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/rooms/{id}": {
+            "get": {
+                "description": "Returns details and active participants of a specific voice room",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Rooms"
+                ],
+                "summary": "Get room details",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Room ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Closes room session and cleans up active participants (Host only)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Rooms"
+                ],
+                "summary": "Delete / close voice room",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Room ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Updates room properties such as title, topic, or status (Host only)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Rooms"
+                ],
+                "summary": "Update voice room",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Room ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update room fields",
+                        "name": "payload",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/module_v1_room.UpdateRoomDto"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/rooms/{id}/join": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Enrolls the user in the voice room and allocates an audio slot",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Rooms"
+                ],
+                "summary": "Join voice room",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Room ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Room access key / password if private",
+                        "name": "payload",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/module_v1_room.JoinRoomDto"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/module_v1_room.JoinRoomResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/rooms/{id}/leave": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Removes the participant from the voice room and releases their slot",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Rooms"
+                ],
+                "summary": "Leave voice room",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Room ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/module_v1_room.LeaveRoomResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/rooms/{id}/messages": {
+            "get": {
+                "description": "Fetches the backchannel text chat history for a voice room",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chat"
+                ],
+                "summary": "Get room chat messages",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Room ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Number of messages to fetch (default 50)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Cursor ISO timestamp to fetch messages prior to",
+                        "name": "before",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/module_v1_chat.ChatMessagesResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Sends a text message, reaction, or idiom prompt to the room's backchannel",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chat"
+                ],
+                "summary": "Send backchannel chat message",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Room ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Message payload",
+                        "name": "payload",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/module_v1_chat.SendMessageDto"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/stats/network": {
+            "get": {
+                "description": "Returns real-time platform statistics including online members, active rooms, and live languages",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stats"
+                ],
+                "summary": "Get live platform stats",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/module_v1_stats.NetworkStatsResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/topics/prompts": {
+            "get": {
+                "description": "Returns categorized conversation starter cards and icebreaker decks",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Topics"
+                ],
+                "summary": "Get conversation topic prompts",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by topic category (e.g. Travel, Business, Tech)",
+                        "name": "category",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by CEFR difficulty level (e.g. A2, B1, B2, C1)",
+                        "name": "level",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/definitions/module_v1_topic.CategoryDeck"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/users/portfolio": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Updates learning languages, CEFR level, location, and name for the user",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Update user portfolio",
+                "parameters": [
+                    {
+                        "description": "Portfolio update fields",
+                        "name": "payload",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/module_v1_user.UpdatePortfolioDto"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/users/stats": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns monthly spoken hours, streak days, karma points, and room history",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Get user statistics",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/module_v1_user.UserStatsResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/users/{userId}": {
+            "get": {
+                "description": "Returns public profile details of a speaker by user ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Get public learner card",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "userId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/nimble-voice-backend_utils_httpx.APIResponse"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "module_v1_auth.AuthResponse": {
+            "type": "object",
+            "properties": {
+                "token": {
+                    "type": "string",
+                    "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                },
+                "user": {}
+            }
+        },
+        "module_v1_auth.GuestAuthDto": {
+            "type": "object",
+            "properties": {
+                "learningLanguage": {
+                    "type": "string",
+                    "example": "English"
+                },
+                "name": {
+                    "type": "string",
+                    "example": "Alex Guest"
+                },
+                "nativeLanguage": {
+                    "type": "string",
+                    "example": "Spanish"
+                }
+            }
+        },
+        "module_v1_auth.LoginDto": {
+            "type": "object",
+            "required": [
+                "email",
+                "password"
+            ],
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "example": "john@example.com"
+                },
+                "password": {
+                    "type": "string",
+                    "example": "secret123"
+                }
+            }
+        },
+        "module_v1_auth.RegisterDto": {
+            "type": "object",
+            "required": [
+                "email",
+                "name",
+                "password"
+            ],
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "example": "john@example.com"
+                },
+                "learningLanguage": {
+                    "type": "string",
+                    "example": "English"
+                },
+                "name": {
+                    "type": "string",
+                    "minLength": 2,
+                    "example": "John Doe"
+                },
+                "nativeLanguage": {
+                    "type": "string",
+                    "example": "Spanish"
+                },
+                "password": {
+                    "type": "string",
+                    "minLength": 6,
+                    "example": "secret123"
+                }
+            }
+        },
+        "module_v1_auth.SessionResponse": {
+            "type": "object",
+            "properties": {
+                "authenticated": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "user": {}
+            }
+        },
+        "module_v1_chat.ChatMessagesResponse": {
+            "type": "object",
+            "properties": {
+                "messages": {}
+            }
+        },
+        "module_v1_chat.SendMessageDto": {
+            "type": "object",
+            "required": [
+                "content"
+            ],
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "maxLength": 500,
+                    "minLength": 1,
+                    "example": "Hello everyone, great to practice speaking here!"
+                },
+                "type": {
+                    "description": "TEXT, SYSTEM, IDIOM, REACTION",
+                    "type": "string",
+                    "example": "TEXT"
+                }
+            }
+        },
+        "module_v1_room.CreateRoomDto": {
+            "type": "object",
+            "required": [
+                "language",
+                "title"
+            ],
+            "properties": {
+                "cefrLevel": {
+                    "type": "string",
+                    "example": "B1"
+                },
+                "description": {
+                    "type": "string",
+                    "example": "Practice casual conversation and fluency"
+                },
+                "isBeginnerFriendly": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "language": {
+                    "type": "string",
+                    "example": "en"
+                },
+                "levelLabel": {
+                    "type": "string",
+                    "example": "Intermediate"
+                },
+                "maxSlots": {
+                    "type": "integer",
+                    "example": 6
+                },
+                "room_key": {
+                    "type": "string",
+                    "example": ""
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "english",
+                        "speaking",
+                        "fluency"
+                    ]
+                },
+                "title": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "minLength": 3,
+                    "example": "Daily English Practice"
+                },
+                "topic": {
+                    "type": "string",
+                    "example": "Weekend plans and hobbies"
+                },
+                "topicTag": {
+                    "type": "string",
+                    "example": "Casual Chat"
+                }
+            }
+        },
+        "module_v1_room.JoinRoomDto": {
+            "type": "object",
+            "properties": {
+                "password": {
+                    "type": "string",
+                    "example": ""
+                }
+            }
+        },
+        "module_v1_room.JoinRoomResponse": {
+            "type": "object",
+            "properties": {
+                "currentSlots": {
+                    "type": "integer",
+                    "example": 3
+                },
+                "maxSlots": {
+                    "type": "integer",
+                    "example": 6
+                },
+                "peerToken": {
+                    "type": "string",
+                    "example": "pt_ckz1234567890"
+                },
+                "roomId": {
+                    "type": "string",
+                    "example": "ckz1234567890"
+                },
+                "success": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "module_v1_room.LeaveRoomResponse": {
+            "type": "object",
+            "properties": {
+                "remainingSlots": {
+                    "type": "integer",
+                    "example": 2
+                },
+                "roomId": {
+                    "type": "string",
+                    "example": "ckz1234567890"
+                },
+                "success": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "module_v1_room.PaginationMeta": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "example": 20
+                },
+                "page": {
+                    "type": "integer",
+                    "example": 1
+                },
+                "total": {
+                    "type": "integer",
+                    "example": 25
+                },
+                "totalPages": {
+                    "type": "integer",
+                    "example": 2
+                }
+            }
+        },
+        "module_v1_room.RoomListResponse": {
+            "type": "object",
+            "properties": {
+                "pagination": {
+                    "$ref": "#/definitions/module_v1_room.PaginationMeta"
+                },
+                "rooms": {}
+            }
+        },
+        "module_v1_room.UpdateRoomDto": {
+            "type": "object",
+            "properties": {
+                "maxSlots": {
+                    "type": "integer",
+                    "example": 8
+                },
+                "status": {
+                    "description": "LIVE, WAITING, ENDED",
+                    "type": "string",
+                    "example": "LIVE"
+                },
+                "title": {
+                    "type": "string",
+                    "example": "Updated English Chat"
+                },
+                "topic": {
+                    "type": "string",
+                    "example": "Travel and culture"
+                }
+            }
+        },
+        "module_v1_stats.NetworkStatsResponse": {
+            "type": "object",
+            "properties": {
+                "activeRoomsCount": {
+                    "type": "integer",
+                    "example": 18
+                },
+                "liveLanguagesCount": {
+                    "type": "integer",
+                    "example": 6
+                },
+                "onlineCount": {
+                    "type": "integer",
+                    "example": 142
+                }
+            }
+        },
+        "module_v1_topic.CategoryDeck": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "example": "Travel"
+                },
+                "icon": {
+                    "type": "string",
+                    "example": "Plane"
+                },
+                "prompts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/module_v1_topic.PromptItem"
+                    }
+                }
+            }
+        },
+        "module_v1_topic.PromptItem": {
+            "type": "object",
+            "properties": {
+                "level": {
+                    "type": "string",
+                    "example": "Intermediate"
+                },
+                "tag": {
+                    "type": "string",
+                    "example": "Vacations"
+                },
+                "title": {
+                    "type": "string",
+                    "example": "Describe your favorite travel destination"
+                }
+            }
+        },
+        "module_v1_user.UpdatePortfolioDto": {
+            "type": "object",
+            "properties": {
+                "cefrLevel": {
+                    "type": "string",
+                    "example": "B2"
+                },
+                "learningLanguage": {
+                    "type": "string",
+                    "example": "English"
+                },
+                "location": {
+                    "type": "string",
+                    "example": "Madrid, Spain"
+                },
+                "name": {
+                    "type": "string",
+                    "example": "Alex Rivera"
+                },
+                "nativeLanguage": {
+                    "type": "string",
+                    "example": "Spanish"
+                }
+            }
+        },
+        "module_v1_user.UserStatsResponse": {
+            "type": "object",
+            "properties": {
+                "currentStreakDays": {
+                    "type": "integer",
+                    "example": 5
+                },
+                "frequentPartnersCount": {
+                    "type": "integer",
+                    "example": 8
+                },
+                "hoursSpokenThisMonth": {
+                    "type": "number",
+                    "example": 14.5
+                },
+                "karmaPoints": {
+                    "type": "integer",
+                    "example": 240
+                },
+                "totalRoomsJoined": {
+                    "type": "integer",
+                    "example": 32
+                }
+            }
+        },
+        "nimble-voice-backend_utils_httpx.APIResponse": {
+            "type": "object",
+            "properties": {
+                "data": {},
+                "message": {
+                    "type": "string"
+                },
+                "status_code": {
+                    "type": "integer"
+                }
+            }
+        }
+    },
+    "securityDefinitions": {
+        "BearerAuth": {
+            "description": "Type \"Bearer\" followed by a space and your JWT token.",
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header"
+        }
+    }
+}
