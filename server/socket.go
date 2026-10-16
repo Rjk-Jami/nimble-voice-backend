@@ -177,11 +177,6 @@ func (s *SocketServer) registerHandlers() {
 					"socketId": sid,
 					"left_at":  time.Now().UTC(),
 				})
-				s.Server.ToRoom("/", roomID, "room:user_left", c, map[string]interface{}{
-					"userId":   userID,
-					"user_id":  userID,
-					"socketId": sid,
-				})
 			}
 		}
 		s.userSocketMu.Unlock()
@@ -236,9 +231,8 @@ func (s *SocketServer) registerHandlers() {
 			"joined":   time.Now().UTC(),
 		}
 
-		// Broadcast presence to all other peers in the room (both kebab and snake case for compatibility)
+		// Broadcast presence to all other peers in the room
 		s.Server.ToRoom("/", roomID, "room:user-joined", c, joinData)
-		s.Server.ToRoom("/", roomID, "room:user_joined", c, joinData)
 
 		// Send existing room peers to the joiner
 		existingPeers := make([]map[string]interface{}, 0)
@@ -307,7 +301,6 @@ func (s *SocketServer) registerHandlers() {
 		}
 
 		s.Server.ToRoom("/", roomID, "room:user-left", c, leaveData)
-		s.Server.ToRoom("/", roomID, "room:user_left", c, leaveData)
 
 		_ = c.Emit("room:left", map[string]interface{}{
 			"roomId":  roomID,
