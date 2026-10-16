@@ -56,7 +56,12 @@ func (s *AuthService) CreateGuest(dto *GuestAuthDto) httpx.APIResponse {
 	}
 	portfolioBytes, _ := json.Marshal(portfolioMap)
 
+	todayStr := time.Now().Format("20060102")
+	seq := r.Intn(900) + 100
+	guestID := fmt.Sprintf("user%s%03d", todayStr, seq)
+
 	guestUser := domain.User{
+		ID:               guestID,
 		Name:             name,
 		AvatarURL:        fmt.Sprintf("https://api.dicebear.com/7.x/bottts/svg?seed=%s_%d", name, randomNum),
 		Location:         "Global",

@@ -241,3 +241,172 @@ func TestSocketServer_ConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestSocketServer_OnlinePresenceAndCounting(t *testing.T) {
+	sockServer, ts := setupTestServer(t)
+	defer ts.Close()
+	defer sockServer.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// 1. Initial count must be 0
+	if initial := sockServer.TotalConnectionsCount(); initial != 0 {
+		t.Errorf("Expected 0 initial connections, got %d", initial)
+	}
+
+	// 2. Connect Client A
+	respA, err := client.Get(ts.URL + "/socket.io/?EIO=4&transport=polling")
+	if err != nil {
+		t.Fatalf("Client A handshake failed: %v", err)
+	}
+	bodyA, _ := io.ReadAll(respA.Body)
+	_ = respA.Body.Close()
+	sidA := extractSID(string(bodyA))
+
+	connBodyA := bytes.NewBufferString(`40{"user_id":"user20261017001"}`)
+	resp, _ := client.Post(ts.URL+"/socket.io/?EIO=4&transport=polling&sid="+sidA, "text/plain", connBodyA)
+	_ = resp.Body.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	if count := sockServer.TotalConnectionsCount(); count != 1 {
+		t.Errorf("Expected 1 connection after Client A connected, got %d", count)
+	}
+	if userCount := sockServer.OnlineUserCount(); userCount != 1 {
+		t.Errorf("Expected 1 online user after Client A connected, got %d", userCount)
+	}
+
+	// 3. Connect Client B
+	respB, err := client.Get(ts.URL + "/socket.io/?EIO=4&transport=polling")
+	if err != nil {
+		t.Fatalf("Client B handshake failed: %v", err)
+	}
+	bodyB, _ := io.ReadAll(respB.Body)
+	_ = respB.Body.Close()
+	sidB := extractSID(string(bodyB))
+
+	connBodyB := bytes.NewBufferString(`40{"user_id":"user20261017002"}`)
+	resp, _ = client.Post(ts.URL+"/socket.io/?EIO=4&transport=polling&sid="+sidB, "text/plain", connBodyB)
+	_ = resp.Body.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	if count := sockServer.TotalConnectionsCount(); count != 2 {
+		t.Errorf("Expected 2 connections after Client B connected, got %d", count)
+	}
+	if userCount := sockServer.OnlineUserCount(); userCount != 2 {
+		t.Errorf("Expected 2 online users after Client B connected, got %d", userCount)
+	}
+
+	// 4. Client B sends disconnect packet 41
+	discBody := bytes.NewBufferString(`41`)
+	resp, _ = client.Post(ts.URL+"/socket.io/?EIO=4&transport=polling&sid="+sidB, "text/plain", discBody)
+	_ = resp.Body.Close()
+	time.Sleep(100 * time.Millisecond)
+
+	if count := sockServer.TotalConnectionsCount(); count != 1 {
+		t.Errorf("Expected 1 connection after Client B disconnected, got %d", count)
+	}
+	if userCount := sockServer.OnlineUserCount(); userCount != 1 {
+		t.Errorf("Expected 1 online user after Client B disconnected, got %d", userCount)
+	}
+}
+
+func TestSocketServer_SecurityAndUnauthorizedScope(t *testing.T) {
+	sockServer, ts := setupTestServer(t)
+	defer ts.Close()
+	defer sockServer.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// Connect Client A (Member of room-alpha)
+	respA, _ := client.Get(ts.URL + "/socket.io/?EIO=4&transport=polling")
+	bodyA, _ := io.ReadAll(respA.Body)
+	_ = respA.Body.Close()
+	sidA := extractSID(string(bodyA))
+	connA := bytes.NewBufferString(`40{"user_id":"user-a"}`)
+	r, _ := client.Post(ts.URL+"/socket.io/?EIO=4&transport=polling&sid="+sidA, "text/plain", connA)
+	_ = r.Body.Close()
+
+	// Connect Client B (Non-member / Attacker)
+	respB, _ := client.Get(ts.URL + "/socket.io/?EIO=4&transport=polling")
+	bodyB, _ := io.ReadAll(respB.Body)
+	_ = respB.Body.Close()
+	sidB := extractSID(string(bodyB))
+	connB := bytes.NewBufferString(`40{"user_id":"attacker-b"}`)
+	r, _ = client.Post(ts.URL+"/socket.io/?EIO=4&transport=polling&sid="+sidB, "text/plain", connB)
+	_ = r.Body.Close()
+
+	time.Sleep(50 * time.Millisecond)
+
+	roomID := "room-alpha"
+
+	// Client A joins room-alpha
+	joinA := bytes.NewBufferString(`42["room:join",{"room_id":"` + roomID + `","user_id":"user-a"}]`)
+	r, _ = client.Post(ts.URL+"/socket.io/?EIO=4&transport=polling&sid="+sidA, "text/plain", joinA)
+	_ = r.Body.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	// Attacker B attempts to toggle mute on room-alpha without joining
+	forgedMute := bytes.NewBufferString(`42["voice:state-toggle",{"room_id":"` + roomID + `","user_id":"user-a","is_muted":true}]`)
+	r, _ = client.Post(ts.URL+"/socket.io/?EIO=4&transport=polling&sid="+sidB, "text/plain", forgedMute)
+	_ = r.Body.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify Attacker B is not in room
+	sockServer.userSocketMu.RLock()
+	inRoom := sockServer.socketRoom[roomID][sidB]
+	sockServer.userSocketMu.RUnlock()
+	if inRoom {
+		t.Errorf("Attacker B should not be present in room-alpha")
+	}
+
+	// Attacker B attempts to send chat to unauthorized room
+	forgedChat := bytes.NewBufferString(`42["chat:send",{"room_id":"` + roomID + `","content":"unauthorized message"}]`)
+	r, _ = client.Post(ts.URL+"/socket.io/?EIO=4&transport=polling&sid="+sidB, "text/plain", forgedChat)
+	_ = r.Body.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify room length remains exactly 1 (Client A only)
+	if count := sockServer.Server.RoomLen("/", roomID); count != 1 {
+		t.Errorf("Expected room member count to remain 1, got %d", count)
+	}
+}
+
+func TestSocketServer_VoiceStateSyncAndMute(t *testing.T) {
+	sockServer, ts := setupTestServer(t)
+	defer ts.Close()
+	defer sockServer.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// Connect Client A
+	respA, _ := client.Get(ts.URL + "/socket.io/?EIO=4&transport=polling")
+	bodyA, _ := io.ReadAll(respA.Body)
+	_ = respA.Body.Close()
+	sidA := extractSID(string(bodyA))
+	connA := bytes.NewBufferString(`40{"user_id":"user-speaker"}`)
+	r, _ := client.Post(ts.URL+"/socket.io/?EIO=4&transport=polling&sid="+sidA, "text/plain", connA)
+	_ = r.Body.Close()
+
+	roomID := "voice-sync-room"
+
+	// Join room
+	joinA := bytes.NewBufferString(`42["room:join",{"room_id":"` + roomID + `","user_id":"user-speaker"}]`)
+	r, _ = client.Post(ts.URL+"/socket.io/?EIO=4&transport=polling&sid="+sidA, "text/plain", joinA)
+	_ = r.Body.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	// Client A toggles mute
+	muteA := bytes.NewBufferString(`42["voice:state-toggle",{"room_id":"` + roomID + `","is_muted":true}]`)
+	r, _ = client.Post(ts.URL+"/socket.io/?EIO=4&transport=polling&sid="+sidA, "text/plain", muteA)
+	_ = r.Body.Close()
+
+	// Client A emits speaking activity
+	speakA := bytes.NewBufferString(`42["voice:speaking",{"room_id":"` + roomID + `","isSpeaking":true,"level":0.85}]`)
+	r, _ = client.Post(ts.URL+"/socket.io/?EIO=4&transport=polling&sid="+sidA, "text/plain", speakA)
+	_ = r.Body.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	if count := sockServer.Server.RoomLen("/", roomID); count != 1 {
+		t.Errorf("Expected 1 member in voice room, got %d", count)
+	}
+}

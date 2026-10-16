@@ -567,11 +567,18 @@ func (s *SocketServer) registerHandlers() {
 			return
 		}
 
-		userID := payload.ResolvedUserID()
+		s.userSocketMu.RLock()
+		inRoom := s.socketRoom[roomID] != nil && s.socketRoom[roomID][c.ID()]
+		actualUserID := s.socketToUser[c.ID()]
+		s.userSocketMu.RUnlock()
+
+		if !inRoom {
+			return
+		}
+
+		userID := actualUserID
 		if userID == "" {
-			s.userSocketMu.RLock()
-			userID = s.socketToUser[c.ID()]
-			s.userSocketMu.RUnlock()
+			userID = payload.ResolvedUserID()
 		}
 		if userID == "" {
 			authCtx := s.extractAuthContext(c.Context())
@@ -613,7 +620,20 @@ func (s *SocketServer) registerHandlers() {
 			return
 		}
 
-		userID := payload.ResolvedUserID()
+		s.userSocketMu.RLock()
+		inRoom := s.socketRoom[roomID] != nil && s.socketRoom[roomID][c.ID()]
+		actualUserID := s.socketToUser[c.ID()]
+		s.userSocketMu.RUnlock()
+
+		if !inRoom {
+			_ = c.Emit("error", map[string]string{"message": "unauthorized: not a member of room"})
+			return
+		}
+
+		userID := actualUserID
+		if userID == "" {
+			userID = payload.ResolvedUserID()
+		}
 		if userID == "" {
 			authCtx := s.extractAuthContext(c.Context())
 			userID = authCtx.UserID
@@ -663,7 +683,20 @@ func (s *SocketServer) registerHandlers() {
 			return
 		}
 
-		userID := payload.ResolvedUserID()
+		s.userSocketMu.RLock()
+		inRoom := s.socketRoom[roomID] != nil && s.socketRoom[roomID][c.ID()]
+		actualUserID := s.socketToUser[c.ID()]
+		s.userSocketMu.RUnlock()
+
+		if !inRoom {
+			_ = c.Emit("error", map[string]string{"message": "unauthorized: not a member of room"})
+			return
+		}
+
+		userID := actualUserID
+		if userID == "" {
+			userID = payload.ResolvedUserID()
+		}
 		if userID == "" {
 			authCtx := s.extractAuthContext(c.Context())
 			userID = authCtx.UserID
@@ -813,7 +846,20 @@ func (s *SocketServer) registerHandlers() {
 			return
 		}
 
-		userID := payload.ResolvedUserID()
+		s.userSocketMu.RLock()
+		inRoom := s.socketRoom[roomID] != nil && s.socketRoom[roomID][c.ID()]
+		actualUserID := s.socketToUser[c.ID()]
+		s.userSocketMu.RUnlock()
+
+		if !inRoom {
+			_ = c.Emit("error", map[string]string{"message": "unauthorized: not a member of room"})
+			return
+		}
+
+		userID := actualUserID
+		if userID == "" {
+			userID = payload.ResolvedUserID()
+		}
 		if userID == "" {
 			authCtx := s.extractAuthContext(c.Context())
 			userID = authCtx.UserID
@@ -914,15 +960,6 @@ func (s *SocketServer) registerHandlers() {
 		}
 
 		s.Server.ToRoom("/", payload.RoomID, "reaction:new-reaction", c, payload.Reaction)
-	})
-
-	// 19. Lobby Channel
-	s.Server.OnEvent("/", "lobby:join", func(c gsocketio.Conn, args []json.RawMessage) {
-		c.Join("lobby")
-	})
-
-	s.Server.OnEvent("/", "lobby:leave", func(c gsocketio.Conn, args []json.RawMessage) {
-		c.Leave("lobby")
 	})
 }
 
