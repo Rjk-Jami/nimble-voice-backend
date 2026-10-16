@@ -747,52 +747,7 @@ func (s *SocketServer) registerHandlers() {
 			"reason":   "kicked",
 		})
 	})
-
 	// Backwards compatibility event listeners
-	s.Server.OnEvent("/", "room:mute", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
-		}
-		roomID := payload.ResolvedRoomID()
-		if roomID == "" {
-			return
-		}
-		userID := payload.ResolvedUserID()
-		if userID == "" {
-			authCtx := s.extractAuthContext(c.Context())
-			userID = authCtx.UserID
-		}
-		isMuted := (payload.IsMuted != nil && *payload.IsMuted) || (payload.IsMute != nil && *payload.IsMute)
-		s.Server.ToRoom("/", roomID, "room:mute", c, map[string]interface{}{
-			"room_id":  roomID,
-			"user_id":  userID,
-			"is_muted": isMuted,
-		})
-	})
-
-	s.Server.OnEvent("/", "room:speaking_state", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
-		}
-		roomID := payload.ResolvedRoomID()
-		if roomID == "" {
-			return
-		}
-		userID := payload.ResolvedUserID()
-		if userID == "" {
-			authCtx := s.extractAuthContext(c.Context())
-			userID = authCtx.UserID
-		}
-		speaking := payload.Speaking != nil && *payload.Speaking
-		s.Server.ToRoom("/", roomID, "room:speaking_state", c, map[string]interface{}{
-			"room_id":  roomID,
-			"user_id":  userID,
-			"speaking": speaking,
-		})
-	})
-
 	s.Server.OnEvent("/", "room:raise_hand", func(c gsocketio.Conn, args []json.RawMessage) {
 		var payload RoomEventPayload
 		if len(args) > 0 {

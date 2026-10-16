@@ -50,9 +50,15 @@ func ConnectPostgres(cfg *config.Config) (*gorm.DB, error) {
 	// Configure connection pool to eliminate handshake delays on concurrent bursts
 	sqlDB, err := db.DB()
 	if err == nil {
-		sqlDB.SetMaxIdleConns(10)
-		sqlDB.SetMaxOpenConns(100)
+		sqlDB.SetMaxIdleConns(5)
+		sqlDB.SetMaxOpenConns(10)
 		sqlDB.SetConnMaxLifetime(time.Hour)
+		sqlDB.SetConnMaxIdleTime(15 * time.Minute)
+		if pingErr := sqlDB.Ping(); pingErr != nil {
+			log.Printf("Warm-up ping warning: %v", pingErr)
+		} else {
+			log.Println("PostgreSQL connection pool pre-warmed successfully")
+		}
 	}
 
 	// Seed topic prompts if empty
