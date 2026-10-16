@@ -32,10 +32,11 @@ type RoomEventPayload struct {
 	IsMuted        *bool       `json:"is_muted,omitempty"`
 	IsMute         *bool       `json:"isMute,omitempty"`
 	IsDeafened     *bool       `json:"is_deafened,omitempty"`
-	HandRaised     *bool       `json:"hand_raised,omitempty"`
-	Speaking       *bool       `json:"speaking,omitempty"`
-	IsSpeaking     *bool       `json:"is_speaking,omitempty"`
-	Level          float64     `json:"level,omitempty"`
+	HandRaised      *bool       `json:"hand_raised,omitempty"`
+	Speaking        *bool       `json:"speaking,omitempty"`
+	IsSpeaking      *bool       `json:"is_speaking,omitempty"`
+	IsSpeakingCamel *bool       `json:"isSpeaking,omitempty"`
+	Level           float64     `json:"level,omitempty"`
 	Signal         interface{} `json:"signal,omitempty"`
 	SDP            interface{} `json:"sdp,omitempty"`
 	Candidate      interface{} `json:"candidate,omitempty"`
@@ -48,6 +49,8 @@ type RoomEventPayload struct {
 	MessageID      string      `json:"messageId,omitempty"`
 	Emoji          string      `json:"emoji,omitempty"`
 	User           interface{} `json:"user,omitempty"`
+	IsSharing      *bool       `json:"isSharing,omitempty"`
+	IsLocked       *bool       `json:"isLocked,omitempty"`
 }
 
 func (p *RoomEventPayload) ResolvedRoomID() string {
@@ -237,6 +240,27 @@ func (s *SocketServer) registerHandlers() {
 		s.Server.ToRoom("/", roomID, "room:user-joined", c, joinData)
 		s.Server.ToRoom("/", roomID, "room:user_joined", c, joinData)
 
+		// Send existing room peers to the joiner
+		existingPeers := make([]map[string]interface{}, 0)
+		s.userSocketMu.RLock()
+		for peerSID := range s.socketRoom[roomID] {
+			if peerSID != c.ID() {
+				peerUID := s.socketToUser[peerSID]
+				existingPeers = append(existingPeers, map[string]interface{}{
+					"socketId": peerSID,
+					"userId":   peerUID,
+					"user": map[string]interface{}{
+						"id": peerUID,
+					},
+				})
+			}
+		}
+		s.userSocketMu.RUnlock()
+
+		_ = c.Emit("room:existing-peers", map[string]interface{}{
+			"peers": existingPeers,
+		})
+
 		// Acknowledge join success to the caller
 		_ = c.Emit("room:joined", map[string]interface{}{
 			"roomId":  roomID,
@@ -310,6 +334,7 @@ func (s *SocketServer) registerHandlers() {
 			"targetSocketId": targetSocketID,
 			"senderSocketId": c.ID(),
 			"senderId":       senderID,
+			"userId":         senderID,
 			"sdp":            payload.SDP,
 			"signal":         payload.Signal,
 		}
@@ -348,6 +373,7 @@ func (s *SocketServer) registerHandlers() {
 			"targetSocketId": targetSocketID,
 			"senderSocketId": c.ID(),
 			"senderId":       senderID,
+			"userId":         senderID,
 			"sdp":            payload.SDP,
 			"signal":         payload.Signal,
 		}
@@ -386,6 +412,7 @@ func (s *SocketServer) registerHandlers() {
 			"targetSocketId": targetSocketID,
 			"senderSocketId": c.ID(),
 			"senderId":       senderID,
+			"userId":         senderID,
 			"candidate":      payload.Candidate,
 			"signal":         payload.Signal,
 		}
@@ -420,12 +447,19 @@ func (s *SocketServer) registerHandlers() {
 
 		userID := payload.ResolvedUserID()
 		if userID == "" {
+			s.userSocketMu.RLock()
+			userID = s.socketToUser[c.ID()]
+			s.userSocketMu.RUnlock()
+		}
+		if userID == "" {
 			authCtx := s.extractAuthContext(c.Context())
 			userID = authCtx.UserID
 		}
 
 		isSpeaking := false
-		if payload.IsSpeaking != nil {
+		if payload.IsSpeakingCamel != nil {
+			isSpeaking = *payload.IsSpeakingCamel
+		} else if payload.IsSpeaking != nil {
 			isSpeaking = *payload.IsSpeaking
 		} else if payload.Speaking != nil {
 			isSpeaking = *payload.Speaking
@@ -679,6 +713,139 @@ func (s *SocketServer) registerHandlers() {
 			"target_id": targetID,
 			"signal":    payload.Signal,
 		})
+	})
+
+	// 14. Network Mesh Latency Ping/Pong
+	s.Server.OnEvent("/", "mesh:ping", func(c gsocketio.Conn, args []json.RawMessage) {
+		var payload interface{}
+		if len(args) > 0 {
+			_ = json.Unmarshal(args[0], &payload)
+		}
+		_ = c.Emit("mesh:pong", payload)
+	})
+
+	// 15. Voice Room: Screen Share Relay
+	s.Server.OnEvent("/", "room:screen-share", func(c gsocketio.Conn, args []json.RawMessage) {
+		var payload RoomEventPayload
+		if len(args) > 0 {
+			_ = json.Unmarshal(args[0], &payload)
+		}
+
+		roomID := payload.ResolvedRoomID()
+		if roomID == "" {
+			return
+		}
+
+		userID := payload.ResolvedUserID()
+		if userID == "" {
+			authCtx := s.extractAuthContext(c.Context())
+			userID = authCtx.UserID
+		}
+
+		isSharing := false
+		if payload.IsSharing != nil {
+			isSharing = *payload.IsSharing
+		}
+
+		s.Server.ToRoom("/", roomID, "room:screen-share-changed", c, map[string]interface{}{
+			"roomId":    roomID,
+			"room_id":   roomID,
+			"userId":    userID,
+			"user_id":   userID,
+			"socketId":  c.ID(),
+			"isSharing": isSharing,
+		})
+	})
+
+	// 16. Host Moderation: Mute User
+	s.Server.OnEvent("/", "host:mute-user", func(c gsocketio.Conn, args []json.RawMessage) {
+		var payload RoomEventPayload
+		if len(args) > 0 {
+			_ = json.Unmarshal(args[0], &payload)
+		}
+
+		roomID := payload.ResolvedRoomID()
+		targetUserID := payload.TargetUserID
+		if targetUserID == "" {
+			targetUserID = payload.ResolvedTargetSocketID()
+		}
+
+		s.userSocketMu.RLock()
+		targetSocketID := s.userToSocket[targetUserID]
+		if targetSocketID == "" {
+			targetSocketID = targetUserID
+		}
+		s.userSocketMu.RUnlock()
+
+		if targetSocketID != "" {
+			s.connsMu.RLock()
+			targetConn := s.conns[targetSocketID]
+			s.connsMu.RUnlock()
+			if targetConn != nil {
+				_ = targetConn.Emit("room:force-muted", map[string]interface{}{
+					"roomId": roomID,
+					"reason": "Host muted your microphone",
+				})
+			}
+		}
+
+		s.Server.ToRoom("/", roomID, "voice:state-updated", c, map[string]interface{}{
+			"roomId":   roomID,
+			"room_id":  roomID,
+			"userId":   targetUserID,
+			"user_id":  targetUserID,
+			"isMuted":  true,
+			"is_muted": true,
+		})
+	})
+
+	// 17. Host Moderation: Lock Room
+	s.Server.OnEvent("/", "host:lock-room", func(c gsocketio.Conn, args []json.RawMessage) {
+		var payload RoomEventPayload
+		if len(args) > 0 {
+			_ = json.Unmarshal(args[0], &payload)
+		}
+
+		roomID := payload.ResolvedRoomID()
+		if roomID == "" {
+			return
+		}
+
+		isLocked := false
+		if payload.IsLocked != nil {
+			isLocked = *payload.IsLocked
+		}
+
+		s.Server.ToRoom("/", roomID, "room:lock-changed", nil, map[string]interface{}{
+			"roomId":   roomID,
+			"isLocked": isLocked,
+		})
+	})
+
+	// 18. Live Floating Reactions
+	s.Server.OnEvent("/", "reaction:send", func(c gsocketio.Conn, args []json.RawMessage) {
+		var payload struct {
+			RoomID   string      `json:"roomId"`
+			Reaction interface{} `json:"reaction"`
+		}
+		if len(args) > 0 {
+			_ = json.Unmarshal(args[0], &payload)
+		}
+
+		if payload.RoomID == "" {
+			return
+		}
+
+		s.Server.ToRoom("/", payload.RoomID, "reaction:new-reaction", c, payload.Reaction)
+	})
+
+	// 19. Lobby Channel
+	s.Server.OnEvent("/", "lobby:join", func(c gsocketio.Conn, args []json.RawMessage) {
+		c.Join("lobby")
+	})
+
+	s.Server.OnEvent("/", "lobby:leave", func(c gsocketio.Conn, args []json.RawMessage) {
+		c.Leave("lobby")
 	})
 }
 

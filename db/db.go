@@ -47,6 +47,14 @@ func ConnectPostgres(cfg *config.Config) (*gorm.DB, error) {
 		log.Printf("AutoMigrate error: %v", err)
 	}
 
+	// Configure connection pool to eliminate handshake delays on concurrent bursts
+	sqlDB, err := db.DB()
+	if err == nil {
+		sqlDB.SetMaxIdleConns(10)
+		sqlDB.SetMaxOpenConns(100)
+		sqlDB.SetConnMaxLifetime(time.Hour)
+	}
+
 	// Seed topic prompts if empty
 	seedTopicPrompts(db)
 

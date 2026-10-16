@@ -20,7 +20,7 @@ type Room struct {
 	CurrentSlots       int               `gorm:"column:current_slots;default:1" json:"current_slots"`
 	TopicTag           string            `gorm:"column:topic_tag;type:varchar(100)" json:"topic_tag"`
 	Tags               datatypes.JSON    `gorm:"column:tags;type:jsonb" json:"tags"`
-	Status             string            `gorm:"column:status;default:'LIVE';type:varchar(20)" json:"status"` // LIVE, WAITING, ENDED
+	Status             string            `gorm:"column:status;default:'LIVE';type:varchar(20);index" json:"status"` // LIVE, WAITING, ENDED
 	IsBeginnerFriendly bool              `gorm:"column:is_beginner_friendly;default:true" json:"is_beginner_friendly"`
 	HasFreeSeats       bool              `gorm:"column:has_free_seats;default:true" json:"has_free_seats"`
 	HasNativeSpeaker   bool              `gorm:"column:has_native_speaker;default:false" json:"has_native_speaker"`
