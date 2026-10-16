@@ -125,6 +125,29 @@ func (s *SocketServer) OnlineUserCount() int {
 	return len(s.userToSocket)
 }
 
+// TotalConnectionsCount returns the count of currently active raw socket connections
+func (s *SocketServer) TotalConnectionsCount() int {
+	s.connsMu.RLock()
+	defer s.connsMu.RUnlock()
+	return len(s.conns)
+}
+
+// BroadcastLobbyStats broadcasts real-time presence counts to all lobby subscribers
+func (s *SocketServer) BroadcastLobbyStats() {
+	count := s.OnlineUserCount()
+	conns := s.TotalConnectionsCount()
+	if conns > count {
+		count = conns
+	}
+	statsData := map[string]interface{}{
+		"onlineCount":  count,
+		"online_count": count,
+		"online_users": count,
+	}
+	s.BroadcastToRoom("lobby", "lobby:stats-update", statsData)
+	s.BroadcastToRoom("lobby", "presence:update", statsData)
+}
+
 // registerHandlers registers connection lifecycle and voice room event dispatchers
 func (s *SocketServer) registerHandlers() {
 	// 1. Connection Lifecycle & Handshake Auth
@@ -150,6 +173,8 @@ func (s *SocketServer) registerHandlers() {
 			"user_id": authCtx.UserID,
 			"time":    time.Now().UTC(),
 		})
+
+		s.BroadcastLobbyStats()
 		return nil
 	})
 
@@ -177,16 +202,77 @@ func (s *SocketServer) registerHandlers() {
 					"socketId": sid,
 					"left_at":  time.Now().UTC(),
 				})
+
+				remaining := len(set)
+				if remaining == 0 {
+					delete(s.socketRoom, roomID)
+					s.BroadcastToRoom("lobby", "lobby:room-removed", map[string]interface{}{
+						"id":      roomID,
+						"roomId":  roomID,
+						"room_id": roomID,
+					})
+					s.BroadcastToRoom("lobby", "lobby:room-deleted", map[string]interface{}{
+						"id":      roomID,
+						"roomId":  roomID,
+						"room_id": roomID,
+					})
+				} else {
+					s.BroadcastToRoom("lobby", "lobby:room-updated", map[string]interface{}{
+						"id":           roomID,
+						"roomId":       roomID,
+						"room_id":      roomID,
+						"currentSlots": remaining,
+						"current_slots": remaining,
+						"status":       "LIVE",
+					})
+				}
 			}
 		}
 		s.userSocketMu.Unlock()
 
+		s.BroadcastLobbyStats()
 		log.Printf("[Socket.IO] Client disconnected: %s (UserID: %s, Reason: %s)", sid, userID, reason)
 	})
 
 	// 3. Error Handler
 	s.Server.OnError("/", func(c gsocketio.Conn, err error) {
 		log.Printf("[Socket.IO] Connection error (%s): %v", c.ID(), err)
+	})
+
+	// 3b. Real-Time Lobby Presence & Stats
+	s.Server.OnEvent("/", "lobby:join", func(c gsocketio.Conn, args []json.RawMessage) {
+		c.Join("lobby")
+		count := s.OnlineUserCount()
+		conns := s.TotalConnectionsCount()
+		if conns > count {
+			count = conns
+		}
+		stats := map[string]interface{}{
+			"onlineCount":  count,
+			"online_count": count,
+			"online_users": count,
+		}
+		_ = c.Emit("lobby:stats-update", stats)
+		_ = c.Emit("presence:update", stats)
+	})
+
+	s.Server.OnEvent("/", "lobby:leave", func(c gsocketio.Conn, args []json.RawMessage) {
+		c.Leave("lobby")
+	})
+
+	s.Server.OnEvent("/", "lobby:request-stats", func(c gsocketio.Conn, args []json.RawMessage) {
+		count := s.OnlineUserCount()
+		conns := s.TotalConnectionsCount()
+		if conns > count {
+			count = conns
+		}
+		stats := map[string]interface{}{
+			"onlineCount":  count,
+			"online_count": count,
+			"online_users": count,
+		}
+		_ = c.Emit("lobby:stats-update", stats)
+		_ = c.Emit("presence:update", stats)
 	})
 
 	// 4. Voice Room: Join
@@ -217,7 +303,23 @@ func (s *SocketServer) registerHandlers() {
 			s.userToSocket[userID] = c.ID()
 			s.socketToUser[c.ID()] = userID
 		}
+		memberCount := len(s.socketRoom[roomID])
 		s.userSocketMu.Unlock()
+
+		// Broadcast room presence and status updates to lobby subscribers
+		roomUpdate := map[string]interface{}{
+			"id":            roomID,
+			"roomId":        roomID,
+			"room_id":       roomID,
+			"currentSlots":  memberCount,
+			"current_slots": memberCount,
+			"status":        "LIVE",
+			"hasFreeSeats":  true,
+		}
+		s.BroadcastToRoom("lobby", "lobby:room-updated", roomUpdate)
+		if memberCount == 1 {
+			s.BroadcastToRoom("lobby", "lobby:room-created", roomUpdate)
+		}
 
 		// Join room in gsocketio
 		c.Join(roomID)
@@ -284,12 +386,39 @@ func (s *SocketServer) registerHandlers() {
 		}
 
 		s.userSocketMu.Lock()
+		remaining := 0
 		if s.socketRoom[roomID] != nil {
 			delete(s.socketRoom[roomID], c.ID())
+			remaining = len(s.socketRoom[roomID])
+			if remaining == 0 {
+				delete(s.socketRoom, roomID)
+			}
 		}
 		s.userSocketMu.Unlock()
 
 		c.Leave(roomID)
+
+		if remaining == 0 {
+			s.BroadcastToRoom("lobby", "lobby:room-removed", map[string]interface{}{
+				"id":      roomID,
+				"roomId":  roomID,
+				"room_id": roomID,
+			})
+			s.BroadcastToRoom("lobby", "lobby:room-deleted", map[string]interface{}{
+				"id":      roomID,
+				"roomId":  roomID,
+				"room_id": roomID,
+			})
+		} else {
+			s.BroadcastToRoom("lobby", "lobby:room-updated", map[string]interface{}{
+				"id":            roomID,
+				"roomId":        roomID,
+				"room_id":       roomID,
+				"currentSlots":  remaining,
+				"current_slots": remaining,
+				"status":        "LIVE",
+			})
+		}
 
 		leaveData := map[string]interface{}{
 			"roomId":   roomID,
