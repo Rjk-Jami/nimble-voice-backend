@@ -410,3 +410,35 @@ func TestSocketServer_VoiceStateSyncAndMute(t *testing.T) {
 		t.Errorf("Expected 1 member in voice room, got %d", count)
 	}
 }
+
+
+func TestSocketServer_IsSocketMember(t *testing.T) {
+	server := &SocketServer{
+		socketRoom: map[string]map[string]bool{
+			"room-a": {
+				"socket-a": true,
+				"socket-b": true,
+			},
+		},
+	}
+
+	tests := []struct {
+		name     string
+		roomID   string
+		socketID string
+		want     bool
+	}{
+		{name: "member is accepted", roomID: "room-a", socketID: "socket-a", want: true},
+		{name: "other room is rejected", roomID: "room-b", socketID: "socket-a", want: false},
+		{name: "non-member is rejected", roomID: "room-a", socketID: "socket-c", want: false},
+		{name: "missing room is rejected", roomID: "", socketID: "socket-a", want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := server.isSocketMember(test.roomID, test.socketID); got != test.want {
+				t.Fatalf("isSocketMember(%q, %q) = %v, want %v", test.roomID, test.socketID, got, test.want)
+			}
+		})
+	}
+}
