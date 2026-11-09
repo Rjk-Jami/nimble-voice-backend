@@ -445,12 +445,15 @@ func (s *SocketServer) registerHandlers() {
 			_ = json.Unmarshal(args[0], &payload)
 		}
 
+		roomID := payload.ResolvedRoomID()
 		targetSocketID := payload.ResolvedTargetSocketID()
-		senderID := payload.ResolvedUserID()
-		if senderID == "" {
-			authCtx := s.extractAuthContext(c.Context())
-			senderID = authCtx.UserID
+		if roomID == "" || targetSocketID == "" || !s.isSocketMember(roomID, c.ID()) || !s.isSocketMember(roomID, targetSocketID) {
+			_ = c.Emit("error", map[string]string{"message": "unauthorized: signaling peers must share an active room"})
+			return
 		}
+		s.userSocketMu.RLock()
+		senderID := s.socketToUser[c.ID()]
+		s.userSocketMu.RUnlock()
 
 		offerData := map[string]interface{}{
 			"targetSocketId": targetSocketID,
@@ -471,9 +474,11 @@ func (s *SocketServer) registerHandlers() {
 			}
 		}
 
-		roomID := payload.ResolvedRoomID()
-		if roomID != "" {
-			s.Server.ToRoom("/", roomID, "webrtc:offer", c, offerData)
+		s.connsMu.RLock()
+		targetConn := s.conns[targetSocketID]
+		s.connsMu.RUnlock()
+		if targetConn != nil {
+			_ = targetConn.Emit("webrtc:offer", offerData)
 		}
 	})
 
@@ -484,12 +489,15 @@ func (s *SocketServer) registerHandlers() {
 			_ = json.Unmarshal(args[0], &payload)
 		}
 
+		roomID := payload.ResolvedRoomID()
 		targetSocketID := payload.ResolvedTargetSocketID()
-		senderID := payload.ResolvedUserID()
-		if senderID == "" {
-			authCtx := s.extractAuthContext(c.Context())
-			senderID = authCtx.UserID
+		if roomID == "" || targetSocketID == "" || !s.isSocketMember(roomID, c.ID()) || !s.isSocketMember(roomID, targetSocketID) {
+			_ = c.Emit("error", map[string]string{"message": "unauthorized: signaling peers must share an active room"})
+			return
 		}
+		s.userSocketMu.RLock()
+		senderID := s.socketToUser[c.ID()]
+		s.userSocketMu.RUnlock()
 
 		answerData := map[string]interface{}{
 			"targetSocketId": targetSocketID,
@@ -510,9 +518,11 @@ func (s *SocketServer) registerHandlers() {
 			}
 		}
 
-		roomID := payload.ResolvedRoomID()
-		if roomID != "" {
-			s.Server.ToRoom("/", roomID, "webrtc:answer", c, answerData)
+		s.connsMu.RLock()
+		targetConn := s.conns[targetSocketID]
+		s.connsMu.RUnlock()
+		if targetConn != nil {
+			_ = targetConn.Emit("webrtc:answer", answerData)
 		}
 	})
 
@@ -523,12 +533,15 @@ func (s *SocketServer) registerHandlers() {
 			_ = json.Unmarshal(args[0], &payload)
 		}
 
+		roomID := payload.ResolvedRoomID()
 		targetSocketID := payload.ResolvedTargetSocketID()
-		senderID := payload.ResolvedUserID()
-		if senderID == "" {
-			authCtx := s.extractAuthContext(c.Context())
-			senderID = authCtx.UserID
+		if roomID == "" || targetSocketID == "" || !s.isSocketMember(roomID, c.ID()) || !s.isSocketMember(roomID, targetSocketID) {
+			_ = c.Emit("error", map[string]string{"message": "unauthorized: signaling peers must share an active room"})
+			return
 		}
+		s.userSocketMu.RLock()
+		senderID := s.socketToUser[c.ID()]
+		s.userSocketMu.RUnlock()
 
 		candData := map[string]interface{}{
 			"targetSocketId": targetSocketID,
@@ -549,9 +562,11 @@ func (s *SocketServer) registerHandlers() {
 			}
 		}
 
-		roomID := payload.ResolvedRoomID()
-		if roomID != "" {
-			s.Server.ToRoom("/", roomID, "webrtc:ice-candidate", c, candData)
+		s.connsMu.RLock()
+		targetConn := s.conns[targetSocketID]
+		s.connsMu.RUnlock()
+		if targetConn != nil {
+			_ = targetConn.Emit("webrtc:ice-candidate", candData)
 		}
 	})
 
@@ -961,6 +976,13 @@ func (s *SocketServer) registerHandlers() {
 
 		s.Server.ToRoom("/", payload.RoomID, "reaction:new-reaction", c, payload.Reaction)
 	})
+}
+
+// isSocketMember verifies that a signaling sender or recipient is in the requested room.
+func (s *SocketServer) isSocketMember(roomID, socketID string) bool {
+	s.userSocketMu.RLock()
+	defer s.userSocketMu.RUnlock()
+	return s.socketRoom[roomID] != nil && s.socketRoom[roomID][socketID]
 }
 
 // extractAuthContext parses handshake payload or query params into typed AuthContext
