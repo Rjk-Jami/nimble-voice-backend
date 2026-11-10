@@ -140,7 +140,7 @@ func (s *RoomService) CreateRoom(hostID string, dto *CreateRoomDto) httpx.APIRes
 	})
 
 	if err != nil {
-		return httpx.SendData(http.StatusInternalServerError, "Failed to create voice room", err.Error())
+		return httpx.InternalError("room.create", err, "Failed to create voice room")
 	}
 
 	// Preload Host & Participants
@@ -201,7 +201,7 @@ func (s *RoomService) GetRoomList(query *RoomQuery) httpx.APIResponse {
 		Find(&rooms).Error
 
 	if err != nil {
-		return httpx.SendData(http.StatusInternalServerError, "Failed to fetch voice rooms", err.Error())
+		return httpx.InternalError("room.list", err, "Failed to fetch voice rooms")
 	}
 
 	totalPages := int(math.Ceil(float64(total) / float64(limit)))
@@ -232,7 +232,7 @@ func (s *RoomService) GetRoomByID(roomID string) httpx.APIResponse {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return httpx.SendData(http.StatusNotFound, "Room not found or has ended")
 		}
-		return httpx.SendData(http.StatusInternalServerError, "Failed to retrieve room details", err.Error())
+		return httpx.InternalError("room.get", err, "Failed to retrieve room details")
 	}
 
 	return httpx.SendData(http.StatusOK, "Room details retrieved successfully", room)
@@ -268,7 +268,7 @@ func (s *RoomService) UpdateRoom(roomID, hostID string, dto *UpdateRoomDto) http
 
 	if len(updates) > 0 {
 		if err := s.db.Model(&room).Updates(updates).Error; err != nil {
-			return httpx.SendData(http.StatusInternalServerError, "Failed to update room", err.Error())
+			return httpx.InternalError("room.update", err, "Failed to update room")
 		}
 	}
 
@@ -303,7 +303,7 @@ func (s *RoomService) DeleteRoom(roomID, hostID string) httpx.APIResponse {
 	})
 
 	if err != nil {
-		return httpx.SendData(http.StatusInternalServerError, "Failed to close room", err.Error())
+		return httpx.InternalError("room.delete", err, "Failed to close room")
 	}
 
 	return httpx.SendData(http.StatusOK, "Room closed successfully", map[string]interface{}{
@@ -395,7 +395,13 @@ func (s *RoomService) JoinRoom(roomID, userID string, dto *JoinRoomDto) httpx.AP
 		if strings.Contains(err.Error(), "not found") {
 			return httpx.SendData(http.StatusNotFound, err.Error())
 		}
-		return httpx.SendData(http.StatusBadRequest, err.Error())
+		if strings.Contains(err.Error(), "locked") {
+			return httpx.SendData(http.StatusLocked, err.Error())
+		}
+		if strings.Contains(err.Error(), "password") {
+			return httpx.SendData(http.StatusBadRequest, err.Error())
+		}
+		return httpx.InternalError("room.join", err, "Failed to join room")
 	}
 
 	s.db.Where("id = ?", roomID).First(&room)
@@ -447,7 +453,7 @@ func (s *RoomService) LeaveRoom(roomID, userID string) httpx.APIResponse {
 	})
 
 	if err != nil {
-		return httpx.SendData(http.StatusInternalServerError, "Failed to leave room", err.Error())
+		return httpx.InternalError("room.leave", err, "Failed to leave room")
 	}
 
 	return httpx.SendData(http.StatusOK, "Left room successfully", LeaveRoomResponse{

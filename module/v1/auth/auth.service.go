@@ -77,12 +77,12 @@ func (s *AuthService) CreateGuest(dto *GuestAuthDto) httpx.APIResponse {
 	}
 
 	if err := s.db.Create(&guestUser).Error; err != nil {
-		return httpx.SendData(http.StatusInternalServerError, "Failed to create guest user", err.Error())
+		return httpx.InternalError("auth.create_guest", err, "Failed to create guest user")
 	}
 
 	token, err := jwt.GenerateToken(guestUser.ID, "", guestUser.Role, "", "")
 	if err != nil {
-		return httpx.SendData(http.StatusInternalServerError, "Failed to generate auth token")
+		return httpx.InternalError("auth.create_guest_token", err, "Failed to generate auth token")
 	}
 
 	return httpx.SendData(http.StatusCreated, "Guest session created successfully", AuthResponse{
@@ -183,12 +183,12 @@ func (s *AuthService) Register(dto *RegisterDto) httpx.APIResponse {
 	}
 
 	if err := s.db.Create(&user).Error; err != nil {
-		return httpx.SendData(http.StatusInternalServerError, "Failed to register user", err.Error())
+		return httpx.InternalError("auth.register", err, "Failed to register user")
 	}
 
 	token, err := jwt.GenerateToken(user.ID, *user.Email, user.Role, "", "")
 	if err != nil {
-		return httpx.SendData(http.StatusInternalServerError, "Failed to generate auth token")
+		return httpx.InternalError("auth.register_token", err, "Failed to generate auth token")
 	}
 
 	return httpx.SendData(http.StatusCreated, "User registered successfully", AuthResponse{
@@ -213,7 +213,7 @@ func (s *AuthService) Login(dto *LoginDto) httpx.APIResponse {
 	}
 	token, err := jwt.GenerateToken(user.ID, emailStr, user.Role, "", "")
 	if err != nil {
-		return httpx.SendData(http.StatusInternalServerError, "Failed to generate token")
+		return httpx.InternalError("auth.login_token", err, "Failed to generate token")
 	}
 
 	return httpx.SendData(http.StatusOK, "Login successful", AuthResponse{

@@ -34,7 +34,7 @@ func (s *TopicService) GetPrompts(query *TopicQuery) httpx.APIResponse {
 
 	var prompts []domain.TopicPrompt
 	if err := dbQuery.Find(&prompts).Error; err != nil {
-		return httpx.SendData(http.StatusInternalServerError, "Failed to retrieve prompts", err.Error())
+		return httpx.InternalError("topic.get_prompts", err, "Failed to retrieve prompts")
 	}
 
 	// Group by category

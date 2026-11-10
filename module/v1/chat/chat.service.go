@@ -52,7 +52,7 @@ func (s *ChatService) GetMessages(roomID string, query *ChatQuery) httpx.APIResp
 	var messages []domain.ChatMessage
 	err := dbQuery.Order("created_at ASC").Limit(limit).Find(&messages).Error
 	if err != nil {
-		return httpx.SendData(http.StatusInternalServerError, "Failed to retrieve messages", err.Error())
+		return httpx.InternalError("chat.get_messages", err, "Failed to retrieve messages")
 	}
 
 	return httpx.SendData(http.StatusOK, "Messages retrieved successfully", ChatMessagesResponse{
@@ -86,7 +86,7 @@ func (s *ChatService) SendMessage(roomID, userID string, dto *SendMessageDto) ht
 	}
 
 	if err := s.db.Create(&message).Error; err != nil {
-		return httpx.SendData(http.StatusInternalServerError, "Failed to send message", err.Error())
+		return httpx.InternalError("chat.send_message", err, "Failed to send message")
 	}
 
 	// Trigger real-time broadcast to room channel via Socket.IO

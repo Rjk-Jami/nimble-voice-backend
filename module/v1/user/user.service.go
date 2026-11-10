@@ -89,7 +89,7 @@ func (s *UserService) UpdatePortfolio(userID string, dto *UpdatePortfolioDto) ht
 
 	if len(updates) > 0 {
 		if err := s.db.Model(&user).Updates(updates).Error; err != nil {
-			return httpx.SendData(http.StatusInternalServerError, "Failed to update portfolio", err.Error())
+			return httpx.InternalError("user.update_portfolio", err, "Failed to update portfolio")
 		}
 	}
 
@@ -122,7 +122,7 @@ func (s *UserService) GetUserStats(userID string) httpx.APIResponse {
 
 func (s *UserService) UpdateAvatar(userID, avatarURL string) httpx.APIResponse {
 	if err := s.db.Model(&domain.User{}).Where("id = ?", userID).Update("avatar_url", avatarURL).Error; err != nil {
-		return httpx.SendData(http.StatusInternalServerError, "Failed to update user avatar", err.Error())
+		return httpx.InternalError("user.update_avatar", err, "Failed to update user avatar")
 	}
 
 	return httpx.SendData(http.StatusOK, "Avatar updated successfully", map[string]interface{}{
