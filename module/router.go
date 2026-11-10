@@ -17,8 +17,7 @@ import (
 	"gorm.io/gorm"
 )
 
-
-func SetupRouter(cfg *config.Config, db *gorm.DB, socketServer ...*server.SocketServer) *gin.Engine {
+func SetupRouter(cfg *config.Config, db *gorm.DB, socketServer *server.SocketServer, presenceServers ...*server.PresenceServer) *gin.Engine {
 	router := gin.New()
 
 	// Global Middlewares
@@ -47,6 +46,14 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, socketServer ...*server.Socket
 		ctx.JSON(200, gin.H{"status": "healthy", "time": time.Now().UTC()})
 	})
 
+	// Native WebSocket presence is separate from Socket.IO voice signaling.
+	if len(presenceServers) > 0 && presenceServers[0] != nil {
+		presenceServer := presenceServers[0]
+		router.GET("/ws/presence", func(ctx *gin.Context) {
+			presenceServer.ServeHTTP(ctx.Writer, ctx.Request)
+		})
+	}
+
 	// Swagger API Documentation UI
 	router.GET("/swagger", func(ctx *gin.Context) {
 		ctx.Redirect(http.StatusMovedPermanently, "/swagger/index.html")
@@ -60,10 +67,9 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, socketServer ...*server.Socket
 		Title:                    "Nimble Voice API Docs",
 	}, swaggerFiles.Handler))
 
-
 	// Mount Socket.IO v4 handler if provided
-	if len(socketServer) > 0 && socketServer[0] != nil {
-		sockHandler := socketServer[0].GinHandler()
+	if socketServer != nil {
+		sockHandler := socketServer.GinHandler()
 		router.GET("/socket.io/*any", sockHandler)
 		router.POST("/socket.io/*any", sockHandler)
 		router.OPTIONS("/socket.io/*any", sockHandler)
@@ -75,12 +81,12 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, socketServer ...*server.Socket
 	// Mount API routes under /api/v1 and /api for seamless frontend compatibility
 	v1 := router.Group("/api/v1")
 	{
-		route_v1.RegisterV1Routes(v1, db, socketServer...)
+		route_v1.RegisterV1Routes(v1, db, socketServer)
 	}
 
 	api := router.Group("/api")
 	{
-		route_v1.RegisterV1Routes(api, db, socketServer...)
+		route_v1.RegisterV1Routes(api, db, socketServer)
 	}
 
 	return router

@@ -60,6 +60,9 @@ func main() {
 	}
 	defer sockServer.Close()
 
+	presenceServer := server.NewPresenceServer(cfg.FrontendOrigins, cfg.PresencePingInterval, cfg.PresencePongTimeout)
+	defer presenceServer.Close()
+
 	go func() {
 		if err := sockServer.Serve(); err != nil {
 			log.Printf("Socket.IO server loop ended: %v", err)
@@ -67,7 +70,7 @@ func main() {
 	}()
 
 	// 6. Setup Router with CORS and Socket.IO handler mounted
-	router := module.SetupRouter(cfg, database, sockServer)
+	router := module.SetupRouter(cfg, database, sockServer, presenceServer)
 
 	// 7. Initialize HTTP Server
 	httpServer := &http.Server{
@@ -80,6 +83,7 @@ func main() {
 	go func() {
 		fmt.Printf("🚀 Server running on port :%s (Mode: %s)\n", cfg.Port, cfg.Environment)
 		fmt.Println("⚡ Real-Time Socket.IO v4 mounted on /socket.io/")
+		fmt.Println("👥 Native WebSocket presence mounted on /ws/presence")
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server Listen error: %v", err)
 		}

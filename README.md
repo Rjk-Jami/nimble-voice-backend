@@ -312,3 +312,18 @@ Socket.IO v4 is mounted at `/socket.io/`.
 ## 📜 License
 
 This project is proprietary and confidential. All rights reserved.
+
+
+## Native WebSocket Online Learner Presence
+
+The unique online learner counter is served independently from Socket.IO at `GET /ws/presence`. The endpoint authenticates the existing JWT from the `nimble_presence` HttpOnly cookie, verifies the browser `Origin` against `FRONTEND_ORIGINS`, and keeps active learner connections in process memory. It performs no database reads or writes for presence. Multiple tabs for one JWT identity count as one learner.
+
+The version 1 protocol uses JSON text frames:
+
+- Client sync: `{"version":1,"type":"presence:sync"}`
+- Initial server snapshot: `{"version":1,"type":"presence:sync","data":{"onlineLearners":125}}`
+- Count change: `{"version":1,"type":"presence:count","data":{"onlineLearners":126}}`
+
+Successful guest, registration, and login responses set the scoped HttpOnly cookie. `POST /api/auth/logout` clears it. Configure `FRONTEND_ORIGINS` as a comma-separated exact origin allowlist, plus `PRESENCE_PING_INTERVAL` and `PRESENCE_PONG_TIMEOUT` as Go durations. For local development use `http://localhost:3000`; in production use the exact HTTPS frontend origin and proxy `/ws/presence` with WebSocket upgrade support. The browser endpoint must use WSS in production. When TLS terminates at a reverse proxy, forward `X-Forwarded-Proto: https` so auth cookies receive `Secure` and `SameSite=None` attributes.
+
+Presence is accurate within one running Go process and resets on restart. Multi-instance deployments require shared presence state and cross-instance broadcast coordination; the current in-memory store does not claim distributed accuracy.

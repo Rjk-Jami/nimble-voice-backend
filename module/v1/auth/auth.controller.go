@@ -19,12 +19,42 @@ func NewAuthController(service AuthServiceInterface) AuthController {
 	return AuthController{service: service}
 }
 
+const presenceAuthCookieName = "nimble_presence"
+
+func setPresenceAuthCookie(ctx *gin.Context, response httpx.APIResponse) {
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return
+	}
+	authResponse, ok := response.Data.(AuthResponse)
+	if !ok || authResponse.Token == "" {
+		return
+	}
+	secure := ctx.Request.TLS != nil || strings.EqualFold(ctx.GetHeader("X-Forwarded-Proto"), "https")
+	sameSite := http.SameSiteLaxMode
+	if secure {
+		sameSite = http.SameSiteNoneMode
+	}
+	ctx.SetSameSite(sameSite)
+	ctx.SetCookie(presenceAuthCookieName, authResponse.Token, 7*24*60*60, "/ws/presence", "", secure, true)
+}
+
+func clearPresenceAuthCookie(ctx *gin.Context) {
+	secure := ctx.Request.TLS != nil || strings.EqualFold(ctx.GetHeader("X-Forwarded-Proto"), "https")
+	sameSite := http.SameSiteLaxMode
+	if secure {
+		sameSite = http.SameSiteNoneMode
+	}
+	ctx.SetSameSite(sameSite)
+	ctx.SetCookie(presenceAuthCookieName, "", -1, "/ws/presence", "", secure, true)
+}
+
 func AuthRouter(router *gin.RouterGroup, controller AuthController) {
 	// POST /guest
 	router.POST("/guest", func(ctx *gin.Context) {
 		var dto GuestAuthDto
 		_ = ctx.ShouldBindJSON(&dto)
 		response := controller.service.CreateGuest(&dto)
+		setPresenceAuthCookie(ctx, response)
 		httpx.SendResponse(ctx, response)
 	})
 
@@ -78,6 +108,7 @@ func AuthRouter(router *gin.RouterGroup, controller AuthController) {
 		}
 
 		response := controller.service.Register(&dto)
+		setPresenceAuthCookie(ctx, response)
 		httpx.SendResponse(ctx, response)
 	})
 
@@ -90,6 +121,13 @@ func AuthRouter(router *gin.RouterGroup, controller AuthController) {
 		}
 
 		response := controller.service.Login(&dto)
+		setPresenceAuthCookie(ctx, response)
 		httpx.SendResponse(ctx, response)
+	})
+
+	// POST /logout clears the HttpOnly cookie used by the native WebSocket handshake.
+	router.POST("/logout", func(ctx *gin.Context) {
+		clearPresenceAuthCookie(ctx)
+		ctx.Status(http.StatusNoContent)
 	})
 }
