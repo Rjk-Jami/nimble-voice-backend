@@ -2,12 +2,14 @@ package jwt
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var SecretKey = []byte("enterprise_super_secret_jwt_key_2026")
+// SecretKey must be configured at startup from validated config.JWTSecret.
+var SecretKey []byte
 
 type Claims struct {
 	UserID   string `json:"user_id"`
@@ -18,7 +20,16 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+// SetSecretKeyForTest sets SecretKey to an explicit ephemeral test secret.
+func SetSecretKeyForTest(secret string) {
+	SecretKey = []byte(secret)
+}
+
 func GenerateToken(userID, email, role, storeID, branchID string) (string, error) {
+	if len(SecretKey) == 0 {
+		return "", errors.New("jwt signing key is not configured")
+	}
+
 	claims := Claims{
 		UserID:   userID,
 		Email:    email,
@@ -34,9 +45,21 @@ func GenerateToken(userID, email, role, storeID, branchID string) (string, error
 }
 
 func ParseToken(tokenStr string) (*Claims, error) {
-	t, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		return SecretKey, nil
-	})
+	if len(SecretKey) == 0 {
+		return nil, errors.New("jwt signing key is not configured")
+	}
+
+	t, err := jwt.ParseWithClaims(
+		tokenStr,
+		&Claims{},
+		func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return SecretKey, nil
+		},
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+	)
 	if err != nil {
 		return nil, err
 	}
