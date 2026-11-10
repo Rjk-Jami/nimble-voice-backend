@@ -1,0 +1,14 @@
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Build artifacts & logs
+tmp/
+logs/
+*.exe
+*.log
+
+# Uploaded user media
+uploads/*
+!uploads/.gitkeep
