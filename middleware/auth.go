@@ -24,7 +24,7 @@ func Auth(allowedRoles ...string) gin.HandlerFunc {
 
 		claims, err := jwt.ParseToken(parts[1])
 		if err != nil {
-			ctx.AbortWithStatusJSON(401, gin.H{"status": 401, "message": "Unauthorized: " + err.Error()})
+			ctx.AbortWithStatusJSON(401, gin.H{"status": 401, "message": "Unauthorized: invalid or expired token"})
 			return
 		}
 

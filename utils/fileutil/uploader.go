@@ -8,10 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+const bytesPerMB int64 = 1024 * 1024
 
 var AllowedImageExtensions = map[string]bool{
 	".jpg":  true,
@@ -21,13 +24,38 @@ var AllowedImageExtensions = map[string]bool{
 	".gif":  true,
 }
 
-const MaxFileSize = 5 * 1024 * 1024 // 5 MB
+var maxFileSizeBytes atomic.Int64
+
+func init() {
+	maxFileSizeBytes.Store(5 * bytesPerMB)
+}
+
+// SetMaxFileSizeMB configures the maximum allowed upload size in megabytes atomically.
+func SetMaxFileSizeMB(mb int64) {
+	if mb <= 0 {
+		return
+	}
+	maxFileSizeBytes.Store(mb * bytesPerMB)
+}
+
+// GetMaxFileSizeBytes returns the current atomic upload size limit in bytes.
+func GetMaxFileSizeBytes() int64 {
+	if val := maxFileSizeBytes.Load(); val > 0 {
+		return val
+	}
+	return 5 * bytesPerMB
+}
 
 // SaveImage validates the uploaded file, generates a safe unique filename, saves it, and returns the accessible public path
 func SaveImage(file *multipart.FileHeader, subFolder string) (string, error) {
+	if file == nil {
+		return "", errors.New("file is required")
+	}
+
 	// 1. File size validation
-	if file.Size > MaxFileSize {
-		return "", errors.New("file size exceeds the 5MB limit")
+	maxBytes := GetMaxFileSizeBytes()
+	if file.Size > maxBytes {
+		return "", fmt.Errorf("file size exceeds the %dMB limit", maxBytes/bytesPerMB)
 	}
 
 	// 2. Extension validation
