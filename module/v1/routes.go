@@ -8,6 +8,7 @@ import (
 	"nimble-voice-backend/module/v1/stats"
 	"nimble-voice-backend/module/v1/topic"
 	"nimble-voice-backend/module/v1/user"
+	"nimble-voice-backend/module/v1/webrtc"
 	"nimble-voice-backend/server"
 
 	"github.com/gin-gonic/gin"
@@ -36,4 +37,7 @@ func RegisterV1Routes(router *gin.RouterGroup, cfg *config.Config, db *gorm.DB, 
 
 	// Stats: /stats/network
 	stats.StatsModule(router.Group("/stats"), db, sockServer...)
+
+	// WebRTC: /webrtc/ice-servers
+	webrtc.WebRTCModule(router.Group("/webrtc"), cfg)
 }
