@@ -1,6 +1,7 @@
 package route_v1
 
 import (
+	"nimble-voice-backend/config"
 	"nimble-voice-backend/module/v1/auth"
 	"nimble-voice-backend/module/v1/chat"
 	"nimble-voice-backend/module/v1/room"
@@ -13,7 +14,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterV1Routes(router *gin.RouterGroup, db *gorm.DB, sockServer ...*server.SocketServer) {
+func RegisterV1Routes(router *gin.RouterGroup, cfg *config.Config, db *gorm.DB, sockServer ...*server.SocketServer) {
 	// Auth: /auth/guest, /auth/session, /auth/profile, /auth/register, /auth/login
 	auth.AuthModule(router.Group("/auth"), db)
 
