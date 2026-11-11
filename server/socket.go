@@ -1,8 +1,11 @@
 package server
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -79,17 +82,25 @@ func (p *RoomEventPayload) ResolvedTargetSocketID() string {
 
 // SocketServer wraps gsocketio.Server with voice room routing and lifecycle handlers
 type SocketServer struct {
-	Server       *gsocketio.Server
-	userSocketMu sync.RWMutex
-	userToSocket map[string]string            // UserID -> SocketID
-	socketToUser map[string]string            // SocketID -> UserID
-	socketRoom   map[string]map[string]bool   // RoomID -> Set of SocketIDs
-	connsMu      sync.RWMutex
-	conns        map[string]gsocketio.Conn    // SocketID -> Conn
+	Server         *gsocketio.Server
+	userSocketMu   sync.RWMutex
+	userToSocket   map[string]string          // UserID -> SocketID
+	socketToUser   map[string]string          // SocketID -> UserID
+	socketRoom     map[string]map[string]bool // RoomID -> Set of SocketIDs
+	connsMu        sync.RWMutex
+	conns          map[string]gsocketio.Conn // SocketID -> Conn
+	originsMu      sync.RWMutex
+	allowedOrigins map[string]struct{}
 }
 
 // NewSocketServer initializes a pure Go Socket.IO v4 server with resilient ping/pong timeouts
+// and defaults to allowing http://localhost:3000 for local/test usage.
 func NewSocketServer(customOpts ...*gsocketio.Options) (*SocketServer, error) {
+	return NewSocketServerWithOrigins([]string{"http://localhost:3000"}, customOpts...)
+}
+
+// NewSocketServerWithOrigins initializes a pure Go Socket.IO v4 server enforcing an explicit origin allowlist.
+func NewSocketServerWithOrigins(allowedOrigins []string, customOpts ...*gsocketio.Options) (*SocketServer, error) {
 	opts := &gsocketio.Options{
 		PingInterval: 25 * time.Second,
 		PingTimeout:  20 * time.Second,
@@ -108,9 +119,39 @@ func NewSocketServer(customOpts ...*gsocketio.Options) (*SocketServer, error) {
 		socketRoom:   make(map[string]map[string]bool),
 		conns:        make(map[string]gsocketio.Conn),
 	}
+	s.SetAllowedOrigins(allowedOrigins)
 	s.registerHandlers()
 
 	return s, nil
+}
+
+// SetAllowedOrigins updates the allowlisted CORS and WebSocket origins in a concurrency-safe manner.
+func (s *SocketServer) SetAllowedOrigins(origins []string) {
+	normalized := make(map[string]struct{}, len(origins))
+	for _, origin := range origins {
+		clean := normalizeSocketOrigin(origin)
+		if clean != "" {
+			normalized[clean] = struct{}{}
+		}
+	}
+	s.originsMu.Lock()
+	s.allowedOrigins = normalized
+	s.originsMu.Unlock()
+}
+
+func normalizeSocketOrigin(origin string) string {
+	return strings.TrimRight(strings.TrimSpace(origin), "/")
+}
+
+func (s *SocketServer) isOriginAllowed(origin string) bool {
+	clean := normalizeSocketOrigin(origin)
+	if clean == "" {
+		return false
+	}
+	s.originsMu.RLock()
+	_, ok := s.allowedOrigins[clean]
+	s.originsMu.RUnlock()
+	return ok
 }
 
 // BroadcastToRoom sends an event to all clients in a specific room
@@ -1041,11 +1082,67 @@ func (s *SocketServer) Close() error {
 	return s.Server.Close()
 }
 
-// ServeHTTP implements net/http.Handler with standard CORS headers for Socket.IO
-func (s *SocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	origin := r.Header.Get("Origin")
+type corsGuardedWriter struct {
+	http.ResponseWriter
+	allowedOrigin string
+	wroteHeader   bool
+}
+
+func (w *corsGuardedWriter) applyCORS() {
+	if w.allowedOrigin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", w.allowedOrigin)
+		w.Header().Set("Vary", "Origin")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization, Accept, X-Requested-With")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	} else {
+		w.Header().Del("Access-Control-Allow-Origin")
+		w.Header().Del("Access-Control-Allow-Credentials")
+	}
+}
+
+func (w *corsGuardedWriter) WriteHeader(code int) {
+	if !w.wroteHeader {
+		w.applyCORS()
+		w.wroteHeader = true
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *corsGuardedWriter) Write(p []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *corsGuardedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("hijack not supported")
+	}
+	return hj.Hijack()
+}
+
+func (w *corsGuardedWriter) Flush() {
+	if fl, ok := w.ResponseWriter.(http.Flusher); ok {
+		fl.Flush()
+	}
+}
+
+func (w *corsGuardedWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (s *SocketServer) handleCORS(w http.ResponseWriter, r *http.Request) (normalizedOrigin string, allowed bool, preflightDone bool) {
+	origin := normalizeSocketOrigin(r.Header.Get("Origin"))
 	if origin != "" {
+		if !s.isOriginAllowed(origin) {
+			http.Error(w, "origin not allowed", http.StatusForbidden)
+			return "", false, false
+		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Vary", "Origin")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization, Accept, X-Requested-With")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -1053,28 +1150,39 @@ func (s *SocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
+		return origin, true, true
+	}
+
+	return origin, true, false
+}
+
+// ServeHTTP implements net/http.Handler with allowlisted CORS headers and Hijacker-safe guard for Socket.IO
+func (s *SocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	origin, allowed, preflightDone := s.handleCORS(w, r)
+	if !allowed || preflightDone {
 		return
 	}
 
-	s.Server.ServeHTTP(w, r)
+	guarded := &corsGuardedWriter{
+		ResponseWriter: w,
+		allowedOrigin:  origin,
+	}
+	s.Server.ServeHTTP(guarded, r)
 }
 
-// GinHandler wraps the socket server into a Gin-compatible handler with Next.js CORS support
+// GinHandler wraps the socket server into a Gin-compatible handler with allowlisted CORS and Hijacker support
 func (s *SocketServer) GinHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		origin := c.GetHeader("Origin")
-		if origin != "" {
-			c.Header("Access-Control-Allow-Origin", origin)
-			c.Header("Access-Control-Allow-Credentials", "true")
-			c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization, Accept, X-Requested-With")
-			c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		}
-
-		if c.Request.Method == http.MethodOptions {
-			c.AbortWithStatus(http.StatusNoContent)
+		origin, allowed, preflightDone := s.handleCORS(c.Writer, c.Request)
+		if !allowed || preflightDone {
+			c.Abort()
 			return
 		}
 
-		s.Server.ServeHTTP(c.Writer, c.Request)
+		guarded := &corsGuardedWriter{
+			ResponseWriter: c.Writer,
+			allowedOrigin:  origin,
+		}
+		s.Server.ServeHTTP(guarded, c.Request)
 	}
 }

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"github.com/shishir1290/gsocketio"
 )
 
@@ -93,6 +95,9 @@ func TestSocketServer_HandshakeAndCORS(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("Expected 200 OK for handshake, got %d: %s", resp.StatusCode, bodyStr)
 	}
+	if origin := resp.Header.Get("Access-Control-Allow-Origin"); origin != "http://localhost:3000" {
+		t.Fatalf("Expected GET polling Access-Control-Allow-Origin 'http://localhost:3000', got %q", origin)
+	}
 
 	sid := extractSID(bodyStr)
 	if sid == "" {
@@ -101,6 +106,63 @@ func TestSocketServer_HandshakeAndCORS(t *testing.T) {
 
 	if !strings.Contains(bodyStr, "pingInterval") || !strings.Contains(bodyStr, "pingTimeout") {
 		t.Errorf("Expected pingInterval and pingTimeout in handshake, got: %s", bodyStr)
+	}
+
+	// 3. Test unlisted Origin rejection on OPTIONS and GET polling
+	for _, method := range []string{http.MethodOptions, http.MethodGet} {
+		badReq, err := http.NewRequest(method, handshakeURL, nil)
+		if err != nil {
+			t.Fatalf("Failed to build unlisted origin %s request: %v", method, err)
+		}
+		badReq.Header.Set("Origin", "https://evil.example")
+		badResp, err := client.Do(badReq)
+		if err != nil {
+			t.Fatalf("Unlisted origin %s request failed: %v", method, err)
+		}
+		_ = badResp.Body.Close()
+
+		if badResp.StatusCode != http.StatusForbidden {
+			t.Fatalf("Expected 403 Forbidden for unlisted origin %s, got %d", method, badResp.StatusCode)
+		}
+		if gotOrigin := badResp.Header.Get("Access-Control-Allow-Origin"); gotOrigin != "" {
+			t.Fatalf("Expected empty ACAO for unlisted origin %s, got %q", method, gotOrigin)
+		}
+	}
+
+	// 4. Test real WebSocket upgrade: allowlisted succeeds, unlisted returns 403
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/socket.io/?EIO=4&transport=websocket"
+	allowHdr := http.Header{}
+	allowHdr.Set("Origin", "http://localhost:3000")
+	wsConn, wsResp, err := websocket.DefaultDialer.Dial(wsURL, allowHdr)
+	if err != nil {
+		status := 0
+		if wsResp != nil {
+			status = wsResp.StatusCode
+		}
+		t.Fatalf("Expected WebSocket upgrade to succeed for allowlisted origin, got status=%d err=%v", status, err)
+	}
+	_, msg, err := wsConn.ReadMessage()
+	_ = wsConn.Close()
+	if err != nil {
+		t.Fatalf("Failed reading Engine.IO open packet over WebSocket: %v", err)
+	}
+	if !strings.HasPrefix(string(msg), "0{") {
+		t.Fatalf("Expected Engine.IO open packet over WebSocket, got %q", string(msg))
+	}
+
+	evilHdr := http.Header{}
+	evilHdr.Set("Origin", "https://evil.example")
+	badWSConn, badWSResp, err := websocket.DefaultDialer.Dial(wsURL, evilHdr)
+	if err == nil {
+		_ = badWSConn.Close()
+		t.Fatalf("Expected WebSocket upgrade from unlisted origin to fail")
+	}
+	if badWSResp == nil || badWSResp.StatusCode != http.StatusForbidden {
+		status := 0
+		if badWSResp != nil {
+			status = badWSResp.StatusCode
+		}
+		t.Fatalf("Expected 403 Forbidden on unlisted WebSocket origin, got %d (err: %v)", status, err)
 	}
 }
 
@@ -440,5 +502,133 @@ func TestSocketServer_IsSocketMember(t *testing.T) {
 				t.Fatalf("isSocketMember(%q, %q) = %v, want %v", test.roomID, test.socketID, got, test.want)
 			}
 		})
+	}
+}
+
+func TestSocketServer_GinHandlerCORSAndWebSocket(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	opts := &gsocketio.Options{
+		PingInterval: 5 * time.Second,
+		PingTimeout:  3 * time.Second,
+		MaxPayload:   512 * 1024,
+	}
+	sockServer, err := NewSocketServer(opts)
+	if err != nil {
+		t.Fatalf("NewSocketServer failed: %v", err)
+	}
+	defer sockServer.Close()
+
+	go func() {
+		_ = sockServer.Serve()
+	}()
+
+	r := gin.New()
+	handler := sockServer.GinHandler()
+	r.GET("/socket.io/*any", handler)
+	r.POST("/socket.io/*any", handler)
+	r.OPTIONS("/socket.io/*any", handler)
+
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// Allowlisted GET polling must not leak "*"
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/socket.io/?EIO=4&transport=polling", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GinHandler GET polling failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://localhost:3000" {
+		t.Fatalf("GinHandler GET ACAO = %q, want %q", got, "http://localhost:3000")
+	}
+
+	// Unlisted GET polling must return 403
+	evilReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/socket.io/?EIO=4&transport=polling", nil)
+	evilReq.Header.Set("Origin", "https://evil.example")
+	evilResp, err := client.Do(evilReq)
+	if err != nil {
+		t.Fatalf("GinHandler unlisted GET failed: %v", err)
+	}
+	_ = evilResp.Body.Close()
+	if evilResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GinHandler unlisted status = %d, want 403", evilResp.StatusCode)
+	}
+
+	// Allowlisted WebSocket upgrade through GinHandler must succeed via Hijacker
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/socket.io/?EIO=4&transport=websocket"
+	allowHdr := http.Header{}
+	allowHdr.Set("Origin", "http://localhost:3000")
+	wsConn, wsResp, err := websocket.DefaultDialer.Dial(wsURL, allowHdr)
+	if err != nil {
+		status := 0
+		if wsResp != nil {
+			status = wsResp.StatusCode
+		}
+		t.Fatalf("GinHandler WebSocket upgrade failed: status=%d err=%v", status, err)
+	}
+	_ = wsConn.Close()
+}
+
+func TestSocketServer_NewSocketServerWithOriginsAndSetAllowedOrigins(t *testing.T) {
+	opts := &gsocketio.Options{
+		PingInterval: 5 * time.Second,
+		PingTimeout:  3 * time.Second,
+		MaxPayload:   512 * 1024,
+	}
+	sockServer, err := NewSocketServerWithOrigins([]string{"https://app.example.com/"}, opts)
+	if err != nil {
+		t.Fatalf("NewSocketServerWithOrigins failed: %v", err)
+	}
+	defer sockServer.Close()
+
+	go func() {
+		_ = sockServer.Serve()
+	}()
+
+	ts := httptest.NewServer(sockServer)
+	defer ts.Close()
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// Default localhost:3000 is rejected when only https://app.example.com is configured
+	reqLocal, _ := http.NewRequest(http.MethodGet, ts.URL+"/socket.io/?EIO=4&transport=polling", nil)
+	reqLocal.Header.Set("Origin", "http://localhost:3000")
+	respLocal, err := client.Do(reqLocal)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	_ = respLocal.Body.Close()
+	if respLocal.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for unconfigured localhost origin, got %d", respLocal.StatusCode)
+	}
+
+	// Configured origin (with trailing slash normalized) is accepted without "*"
+	reqApp, _ := http.NewRequest(http.MethodGet, ts.URL+"/socket.io/?EIO=4&transport=polling", nil)
+	reqApp.Header.Set("Origin", "https://app.example.com")
+	respApp, err := client.Do(reqApp)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	_ = respApp.Body.Close()
+	if respApp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for allowlisted app origin, got %d", respApp.StatusCode)
+	}
+	if got := respApp.Header.Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
+		t.Fatalf("expected ACAO https://app.example.com, got %q", got)
+	}
+
+	// Updating allowlist via SetAllowedOrigins switches permitted origins
+	sockServer.SetAllowedOrigins([]string{"https://studio.example.com"})
+	reqOld, _ := http.NewRequest(http.MethodGet, ts.URL+"/socket.io/?EIO=4&transport=polling", nil)
+	reqOld.Header.Set("Origin", "https://app.example.com")
+	respOld, err := client.Do(reqOld)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	_ = respOld.Body.Close()
+	if respOld.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 after SetAllowedOrigins removed old origin, got %d", respOld.StatusCode)
 	}
 }

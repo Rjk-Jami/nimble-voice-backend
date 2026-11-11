@@ -16,6 +16,7 @@ import (
 	"nimble-voice-backend/module"
 	"nimble-voice-backend/pkg/logger"
 	"nimble-voice-backend/server"
+	"nimble-voice-backend/utils/fileutil"
 	"nimble-voice-backend/utils/jwt"
 )
 
@@ -36,6 +37,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Config load error: %v", err)
 	}
+	fileutil.SetMaxFileSizeMB(cfg.MaxFileSizeMB)
 
 	// 2. Initialize Zap Logger
 	appLogger, err := logger.InitLogger(cfg.Environment)
@@ -54,13 +56,13 @@ func main() {
 	}
 
 	// 5. Initialize Pure Go Socket.IO v4 Server (gsocketio)
-	sockServer, err := server.NewSocketServer()
+	sockServer, err := server.NewSocketServerWithOrigins(cfg.CORSAllowedOrigins)
 	if err != nil {
 		log.Fatalf("Socket server init error: %v", err)
 	}
 	defer sockServer.Close()
 
-	presenceServer := server.NewPresenceServer(cfg.FrontendOrigins, cfg.PresencePingInterval, cfg.PresencePongTimeout)
+	presenceServer := server.NewPresenceServer(cfg.CORSAllowedOrigins, cfg.PresencePingInterval, cfg.PresencePongTimeout)
 	defer presenceServer.Close()
 
 	go func() {
