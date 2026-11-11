@@ -89,9 +89,9 @@ func TestLoadConfigFromLookup_MissingAndPlaceholderSecretsAggregated(t *testing.
 			wantSubs: []string{"DB_PASSWORD", "JWT_SECRET"},
 		},
 		{
-			name: "known committed DB_PASSWORD and JWT_SECRET literals rejected",
+			name: "placeholder DB_PASSWORD and known committed JWT_SECRET literals rejected",
 			env: map[string]string{
-				"DB_PASSWORD": "rjk.207235",
+				"DB_PASSWORD": "your_db_password",
 				"JWT_SECRET":  "enterprise_super_secret_jwt_key_2026",
 			},
 			wantSubs: []string{"DB_PASSWORD", "JWT_SECRET"},

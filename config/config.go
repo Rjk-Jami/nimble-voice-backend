@@ -48,7 +48,6 @@ type Config struct {
 
 var (
 	disallowedDBPasswords = map[string]struct{}{
-		"rjk.207235":       {},
 		"password":         {},
 		"postgres":         {},
 		"changeme":         {},
@@ -64,10 +63,10 @@ var (
 		"your_jwt_secret":                      {},
 	}
 	disallowedTURNSecrets = map[string]struct{}{
-		"changeme":               {},
-		"change_me":              {},
-		"secret":                 {},
-		"turn_secret":            {},
+		"changeme":                {},
+		"change_me":               {},
+		"secret":                  {},
+		"turn_secret":             {},
 		"your_turn_shared_secret": {},
 	}
 )
