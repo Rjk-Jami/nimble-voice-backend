@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"nimble-voice-backend/domain"
+	"nimble-voice-backend/internal/contracts"
 	"nimble-voice-backend/utils/httpx"
 
 	"github.com/google/uuid"
@@ -462,3 +463,43 @@ func (s *RoomService) LeaveRoom(roomID, userID string) httpx.APIResponse {
 		RemainingSlots: int(remainingCount),
 	})
 }
+
+// Authorizer implements contracts.RoomAuthorizer backed by PostgreSQL room and participant records.
+type Authorizer struct {
+	db *gorm.DB
+}
+
+var _ contracts.RoomAuthorizer = (*Authorizer)(nil)
+
+// NewAuthorizer constructs a contracts.RoomAuthorizer for room host and membership verification.
+func NewAuthorizer(db *gorm.DB) contracts.RoomAuthorizer {
+	return &Authorizer{db: db}
+}
+
+func (a *Authorizer) IsRoomHost(roomID, userID string) (bool, error) {
+	if a == nil || a.db == nil || strings.TrimSpace(roomID) == "" || strings.TrimSpace(userID) == "" {
+		return false, nil
+	}
+	var room domain.Room
+	if err := a.db.Select("host_id").Where("id = ?", roomID).First(&room).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return room.HostID == userID, nil
+}
+
+func (a *Authorizer) IsRoomMember(roomID, userID string) (bool, error) {
+	if a == nil || a.db == nil || strings.TrimSpace(roomID) == "" || strings.TrimSpace(userID) == "" {
+		return false, nil
+	}
+	var count int64
+	if err := a.db.Model(&domain.RoomParticipant{}).
+		Where("room_id = ? AND user_id = ? AND left_at IS NULL", roomID, userID).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+

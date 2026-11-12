@@ -1,8 +1,11 @@
 package chat
 
 type SendMessageDto struct {
-	Content string `json:"content" binding:"required,min=1,max=500" example:"Hello everyone, great to practice speaking here!"`
-	Type    string `json:"type" example:"TEXT"` // TEXT, SYSTEM, IDIOM, REACTION
+	Content         string `json:"content" binding:"omitempty,max=500" example:"Hello everyone, great to practice speaking here!"`
+	Type            string `json:"type" example:"TEXT"` // TEXT, IMAGE, IDIOM, REACTION
+	ClientMessageID string `json:"clientMessageId" binding:"omitempty,max=128"`
+	MediaURL        string `json:"mediaUrl" binding:"omitempty,max=1000"`
+	MediaType       string `json:"mediaType" binding:"omitempty,max=100"`
 }
 
 type ChatQuery struct {
@@ -13,4 +16,3 @@ type ChatQuery struct {
 type ChatMessagesResponse struct {
 	Messages interface{} `json:"messages"`
 }
-

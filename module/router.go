@@ -9,6 +9,7 @@ import (
 	_ "nimble-voice-backend/docs"
 	"nimble-voice-backend/middleware"
 	route_v1 "nimble-voice-backend/module/v1"
+	"nimble-voice-backend/module/v1/room"
 	"nimble-voice-backend/pkg/logger"
 	"nimble-voice-backend/server"
 
@@ -110,6 +111,9 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, socketServer *server.SocketSer
 
 	// Mount Socket.IO v4 handler if provided
 	if socketServer != nil {
+		if db != nil {
+			socketServer.SetRoomAuthorizer(room.NewAuthorizer(db))
+		}
 		sockHandler := socketServer.GinHandler()
 		router.GET("/socket.io/*any", sockHandler)
 		router.POST("/socket.io/*any", sockHandler)

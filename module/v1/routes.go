@@ -2,6 +2,7 @@ package route_v1
 
 import (
 	"nimble-voice-backend/config"
+	"nimble-voice-backend/internal/contracts"
 	"nimble-voice-backend/module/v1/auth"
 	"nimble-voice-backend/module/v1/chat"
 	"nimble-voice-backend/module/v1/room"
@@ -23,9 +24,13 @@ func RegisterV1Routes(router *gin.RouterGroup, cfg *config.Config, db *gorm.DB, 
 	room.RoomModule(router.Group("/rooms"), db)
 	room.RoomModule(router.Group("/room"), db) // Singular alias
 
-	// Chat backchannel: /rooms/:roomId/messages
-	chat.ChatModule(router.Group("/rooms"), db, sockServer...)
-	chat.ChatModule(router.Group("/room"), db, sockServer...)
+	// Chat backchannel: /rooms/:roomId/messages (avoid typed-nil contracts.RoomBroadcaster trap)
+	var broadcasters []contracts.RoomBroadcaster
+	if len(sockServer) > 0 && sockServer[0] != nil {
+		broadcasters = []contracts.RoomBroadcaster{sockServer[0]}
+	}
+	chat.ChatModule(router.Group("/rooms"), db, broadcasters...)
+	chat.ChatModule(router.Group("/room"), db, broadcasters...)
 
 	// Users: /users/:userId, /users/portfolio, /users/stats
 	user.UserModule(router.Group("/users"), db)

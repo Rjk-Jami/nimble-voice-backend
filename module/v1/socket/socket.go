@@ -10,7 +10,6 @@ import (
 // Re-export core types from server package for seamless access
 type SocketServer = server.SocketServer
 type AuthContext = server.AuthContext
-type RoomEventPayload = server.RoomEventPayload
 
 // InitSocketServer initializes the pure Go Socket.IO v4 server instance
 func InitSocketServer(opts ...*gsocketio.Options) (*SocketServer, error) {

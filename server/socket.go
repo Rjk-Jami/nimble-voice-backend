@@ -9,15 +9,17 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"nimble-voice-backend/internal/contracts"
 	"nimble-voice-backend/utils/jwt"
 
 	"github.com/gin-gonic/gin"
 	"github.com/shishir1290/gsocketio"
 )
 
-// AuthContext holds user credentials extracted during connection handshake
+// AuthContext holds verified user identity extracted from the HS256 JWT handshake.
 type AuthContext struct {
 	UserID string `json:"user_id"`
 	Email  string `json:"email"`
@@ -25,73 +27,38 @@ type AuthContext struct {
 	Token  string `json:"token"`
 }
 
-// Event payload structures for real-time voice room interactions
-type RoomEventPayload struct {
-	RoomID         string      `json:"room_id"`
-	RoomId         string      `json:"roomId"`
-	UserID         string      `json:"user_id"`
-	UserId         string      `json:"userId"`
-	Role           string      `json:"role,omitempty"`
-	IsMuted        *bool       `json:"is_muted,omitempty"`
-	IsMute         *bool       `json:"isMute,omitempty"`
-	IsDeafened     *bool       `json:"is_deafened,omitempty"`
-	HandRaised      *bool       `json:"hand_raised,omitempty"`
-	Speaking        *bool       `json:"speaking,omitempty"`
-	IsSpeaking      *bool       `json:"is_speaking,omitempty"`
-	IsSpeakingCamel *bool       `json:"isSpeaking,omitempty"`
-	Level           float64     `json:"level,omitempty"`
-	Signal         interface{} `json:"signal,omitempty"`
-	SDP            interface{} `json:"sdp,omitempty"`
-	Candidate      interface{} `json:"candidate,omitempty"`
-	TargetID       string      `json:"target_id,omitempty"`
-	TargetId       string      `json:"targetId,omitempty"`
-	TargetSocketID string      `json:"targetSocketId,omitempty"`
-	TargetUserID   string      `json:"targetUserId,omitempty"`
-	Content        string      `json:"content,omitempty"`
-	Type           string      `json:"type,omitempty"`
-	MessageID      string      `json:"messageId,omitempty"`
-	Emoji          string      `json:"emoji,omitempty"`
-	User           interface{} `json:"user,omitempty"`
-	IsSharing      *bool       `json:"isSharing,omitempty"`
-	IsLocked       *bool       `json:"isLocked,omitempty"`
+type peerRoomState struct {
+	UserID          string
+	Email           string
+	Role            string
+	IsHost          bool
+	IsMuted         bool
+	IsDeafened      bool
+	HandRaised      bool
+	IsSpeaking      bool
+	IsScreenSharing bool
 }
 
-func (p *RoomEventPayload) ResolvedRoomID() string {
-	if p.RoomID != "" {
-		return p.RoomID
-	}
-	return p.RoomId
-}
-
-func (p *RoomEventPayload) ResolvedUserID() string {
-	if p.UserID != "" {
-		return p.UserID
-	}
-	return p.UserId
-}
-
-func (p *RoomEventPayload) ResolvedTargetSocketID() string {
-	if p.TargetSocketID != "" {
-		return p.TargetSocketID
-	}
-	if p.TargetID != "" {
-		return p.TargetID
-	}
-	return p.TargetId
-}
-
-// SocketServer wraps gsocketio.Server with voice room routing and lifecycle handlers
+// SocketServer wraps gsocketio.Server with JWT-authenticated voice room routing and canonical event emission.
 type SocketServer struct {
 	Server         *gsocketio.Server
 	userSocketMu   sync.RWMutex
-	userToSocket   map[string]string          // UserID -> SocketID
-	socketToUser   map[string]string          // SocketID -> UserID
-	socketRoom     map[string]map[string]bool // RoomID -> Set of SocketIDs
+	userToSockets  map[string]map[string]struct{}      // UserID -> Set of SocketIDs
+	socketToUser   map[string]string                   // SocketID -> UserID
+	socketRoom     map[string]map[string]bool          // RoomID -> Set of SocketIDs
+	peerStates     map[string]map[string]*peerRoomState // RoomID -> SocketID -> state
+	roomVersions   map[string]int64                    // RoomID -> monotonic version
+	lockedRooms    map[string]bool                     // RoomID -> lock state
+	presenceSeq    atomic.Int64
 	connsMu        sync.RWMutex
 	conns          map[string]gsocketio.Conn // SocketID -> Conn
 	originsMu      sync.RWMutex
 	allowedOrigins map[string]struct{}
+	authorizerMu   sync.RWMutex
+	roomAuthorizer contracts.RoomAuthorizer
 }
+
+var _ contracts.RoomBroadcaster = (*SocketServer)(nil)
 
 // NewSocketServer initializes a pure Go Socket.IO v4 server with resilient ping/pong timeouts
 // and defaults to allowing http://localhost:3000 for local/test usage.
@@ -113,16 +80,33 @@ func NewSocketServerWithOrigins(allowedOrigins []string, customOpts ...*gsocketi
 
 	srv := gsocketio.New(opts)
 	s := &SocketServer{
-		Server:       srv,
-		userToSocket: make(map[string]string),
-		socketToUser: make(map[string]string),
-		socketRoom:   make(map[string]map[string]bool),
-		conns:        make(map[string]gsocketio.Conn),
+		Server:        srv,
+		userToSockets: make(map[string]map[string]struct{}),
+		socketToUser:  make(map[string]string),
+		socketRoom:    make(map[string]map[string]bool),
+		peerStates:    make(map[string]map[string]*peerRoomState),
+		roomVersions:  make(map[string]int64),
+		lockedRooms:   make(map[string]bool),
+		conns:         make(map[string]gsocketio.Conn),
 	}
 	s.SetAllowedOrigins(allowedOrigins)
 	s.registerHandlers()
 
 	return s, nil
+}
+
+// SetRoomAuthorizer configures the authoritative room host/member authorizer.
+func (s *SocketServer) SetRoomAuthorizer(auth contracts.RoomAuthorizer) {
+	s.authorizerMu.Lock()
+	s.roomAuthorizer = auth
+	s.authorizerMu.Unlock()
+}
+
+func (s *SocketServer) getRoomAuthorizer() contracts.RoomAuthorizer {
+	s.authorizerMu.RLock()
+	auth := s.roomAuthorizer
+	s.authorizerMu.RUnlock()
+	return auth
 }
 
 // SetAllowedOrigins updates the allowlisted CORS and WebSocket origins in a concurrency-safe manner.
@@ -154,868 +138,1283 @@ func (s *SocketServer) isOriginAllowed(origin string) bool {
 	return ok
 }
 
-// BroadcastToRoom sends an event to all clients in a specific room
-func (s *SocketServer) BroadcastToRoom(roomID, event string, data interface{}) {
-	s.Server.ToRoom("/", roomID, event, nil, data)
-}
-
-// OnlineUserCount returns the count of currently connected unique authenticated/guest users
+// OnlineUserCount returns the count of currently connected unique authenticated users.
 func (s *SocketServer) OnlineUserCount() int {
 	s.userSocketMu.RLock()
 	defer s.userSocketMu.RUnlock()
-	return len(s.userToSocket)
+	return len(s.userToSockets)
 }
 
-// TotalConnectionsCount returns the count of currently active raw socket connections
+// TotalConnectionsCount returns the count of currently active raw socket connections.
 func (s *SocketServer) TotalConnectionsCount() int {
 	s.connsMu.RLock()
 	defer s.connsMu.RUnlock()
 	return len(s.conns)
 }
 
-// BroadcastLobbyStats broadcasts real-time presence counts to all lobby subscribers
-func (s *SocketServer) BroadcastLobbyStats() {
-	count := s.OnlineUserCount()
-	conns := s.TotalConnectionsCount()
-	if conns > count {
-		count = conns
+func (s *SocketServer) nextRoomVersionLocked(roomID string) int64 {
+	if s.roomVersions == nil {
+		s.roomVersions = make(map[string]int64)
 	}
-	statsData := map[string]interface{}{
-		"onlineCount":  count,
-		"online_count": count,
-		"online_users": count,
-	}
-	s.BroadcastToRoom("lobby", "lobby:stats-update", statsData)
-	s.BroadcastToRoom("lobby", "presence:update", statsData)
+	next := s.roomVersions[roomID] + 1
+	s.roomVersions[roomID] = next
+	return next
 }
 
-// registerHandlers registers connection lifecycle and voice room event dispatchers
+func (s *SocketServer) currentRoomVersion(roomID string) int64 {
+	s.userSocketMu.RLock()
+	defer s.userSocketMu.RUnlock()
+	return s.roomVersions[roomID]
+}
+
+// BroadcastRoomEvent wraps data in a canonical ServerEventEnvelope and emits it to all sockets in roomID.
+func (s *SocketServer) BroadcastRoomEvent(roomID, event string, version int64, data any) {
+	if roomID == "" || event == "" {
+		return
+	}
+	env := contracts.NewServerEventEnvelope(event, roomID, version, data)
+	s.Server.ToRoom("/", roomID, event, nil, env)
+}
+
+// BroadcastLobbyEvent wraps data in a canonical ServerEventEnvelope and emits it to all lobby subscribers.
+func (s *SocketServer) BroadcastLobbyEvent(event, roomID string, version int64, data any) {
+	if event == "" {
+		return
+	}
+	env := contracts.NewServerEventEnvelope(event, roomID, version, data)
+	s.Server.ToRoom("/", "lobby", event, nil, env)
+}
+
+func (s *SocketServer) emitEnvelopeToConn(c gsocketio.Conn, event, roomID string, version int64, data any) {
+	if c == nil || event == "" {
+		return
+	}
+	env := contracts.NewServerEventEnvelope(event, roomID, version, data)
+	_ = c.Emit(event, env)
+}
+
+func (s *SocketServer) emitEnvelopeToRoomExcept(roomID, event string, version int64, except gsocketio.Conn, data any) {
+	if roomID == "" || event == "" {
+		return
+	}
+	env := contracts.NewServerEventEnvelope(event, roomID, version, data)
+	s.Server.ToRoom("/", roomID, event, except, env)
+}
+
+func (s *SocketServer) emitAckOK(c gsocketio.Conn, requestID string, data any) {
+	if c == nil {
+		return
+	}
+	ack := contracts.NewAckOK(requestID, data)
+	_ = c.Emit(contracts.EventCommandAck, ack)
+}
+
+func (s *SocketServer) emitAckError(c gsocketio.Conn, requestID, code, message string) {
+	if c == nil {
+		return
+	}
+	ack := contracts.NewAckError(requestID, code, message)
+	_ = c.Emit(contracts.EventCommandAck, ack)
+}
+
+func (s *SocketServer) requireAuth(c gsocketio.Conn) (*AuthContext, bool) {
+	if c == nil {
+		return nil, false
+	}
+	authCtx, ok := c.Context().(*AuthContext)
+	if !ok || authCtx == nil || strings.TrimSpace(authCtx.UserID) == "" {
+		return nil, false
+	}
+	return authCtx, true
+}
+
+func decodeCommandPayload[T any](args []json.RawMessage, out *T) error {
+	if len(args) == 0 {
+		return errors.New("payload is required")
+	}
+	trimmed := strings.TrimSpace(string(args[0]))
+	if trimmed == "" || trimmed == "null" {
+		return errors.New("payload is required")
+	}
+	if err := json.Unmarshal(args[0], out); err != nil {
+		return err
+	}
+	return nil
+}
+
+func decodeOptionalCommandPayload[T any](args []json.RawMessage, out *T) error {
+	if len(args) == 0 {
+		return nil
+	}
+	trimmed := strings.TrimSpace(string(args[0]))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	return json.Unmarshal(args[0], out)
+}
+
+func (s *SocketServer) authenticateHandshake(raw interface{}) (*AuthContext, error) {
+	if raw == nil {
+		return nil, errors.New("unauthorized: missing handshake auth")
+	}
+	if ac, ok := raw.(*AuthContext); ok && ac != nil && strings.TrimSpace(ac.UserID) != "" {
+		return ac, nil
+	}
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, errors.New("unauthorized: invalid handshake auth")
+	}
+	rawToken, _ := m["token"].(string)
+	token := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rawToken), "Bearer "))
+	if token == "" {
+		return nil, errors.New("unauthorized: token is required")
+	}
+	claims, err := jwt.ParseToken(token)
+	if err != nil || claims == nil || strings.TrimSpace(claims.UserID) == "" {
+		return nil, errors.New("unauthorized: invalid or expired token")
+	}
+	return &AuthContext{
+		UserID: claims.UserID,
+		Email:  claims.Email,
+		Role:   claims.Role,
+		Token:  token,
+	}, nil
+}
+
+func displayNameFromEmail(email, userID string) string {
+	if idx := strings.Index(email, "@"); idx > 0 {
+		return email[:idx]
+	}
+	if strings.HasPrefix(userID, "user") {
+		digits := strings.TrimPrefix(userID, "user")
+		if len(digits) >= 8 {
+			suffix := digits[8:]
+			if suffix != "" {
+				trimmed := strings.TrimLeft(suffix, "0")
+				if trimmed != "" {
+					return "Guest #" + trimmed
+				}
+			}
+		}
+		return "Guest #" + userID
+	}
+	if userID != "" {
+		return userID
+	}
+	return "Learner"
+}
+
+func buildUserSummaryDTO(userID, email string) contracts.UserSummaryDTO {
+	isGuest := strings.HasPrefix(userID, "user") || email == ""
+	return contracts.NewUserSummaryDTO(contracts.UserSummaryDTO{
+		ID:      userID,
+		Name:    displayNameFromEmail(email, userID),
+		IsGuest: isGuest,
+	})
+}
+
+func buildParticipantDTO(socketID string, ps *peerRoomState) contracts.ParticipantDTO {
+	return contracts.NewParticipantDTO(contracts.ParticipantDTO{
+		UserSummaryDTO:  buildUserSummaryDTO(ps.UserID, ps.Email),
+		IsHost:          ps.IsHost,
+		IsSpeaking:      ps.IsSpeaking,
+		IsMuted:         ps.IsMuted,
+		IsDeafened:      ps.IsDeafened,
+		HandRaised:      ps.HandRaised,
+		IsScreenSharing: ps.IsScreenSharing,
+		SocketID:        socketID,
+	})
+}
+
 func (s *SocketServer) registerHandlers() {
-	// 1. Connection Lifecycle & Handshake Auth
+	// 1. Connection Lifecycle & Strict HS256 JWT Handshake Auth
 	s.Server.OnConnect("/", func(c gsocketio.Conn) error {
-		authCtx := s.extractAuthContext(c.Context())
+		authCtx, err := s.authenticateHandshake(c.Context())
+		if err != nil {
+			c.SetContext(nil)
+			return err
+		}
 		c.SetContext(authCtx)
 
 		s.connsMu.Lock()
 		s.conns[c.ID()] = c
 		s.connsMu.Unlock()
 
-		if authCtx.UserID != "" {
-			s.userSocketMu.Lock()
-			s.userToSocket[authCtx.UserID] = c.ID()
-			s.socketToUser[c.ID()] = authCtx.UserID
-			s.userSocketMu.Unlock()
+		s.userSocketMu.Lock()
+		s.socketToUser[c.ID()] = authCtx.UserID
+		if s.userToSockets[authCtx.UserID] == nil {
+			s.userToSockets[authCtx.UserID] = make(map[string]struct{})
+		}
+		s.userToSockets[authCtx.UserID][c.ID()] = struct{}{}
+		firstUserSocket := len(s.userToSockets[authCtx.UserID]) == 1
+		onlineCount := len(s.userToSockets)
+		s.userSocketMu.Unlock()
+
+		var presenceVer int64
+		if firstUserSocket {
+			presenceVer = s.presenceSeq.Add(1)
+			s.BroadcastLobbyEvent(contracts.EventPresenceUpdated, "", presenceVer, contracts.PresenceDTO{
+				OnlineCount: onlineCount,
+			})
+		} else {
+			presenceVer = s.presenceSeq.Load()
 		}
 
-		log.Printf("[Socket.IO] Client connected: %s (UserID: %s, Role: %s)", c.ID(), authCtx.UserID, authCtx.Role)
-
-		_ = c.Emit("connected", map[string]interface{}{
-			"sid":     c.ID(),
-			"user_id": authCtx.UserID,
-			"time":    time.Now().UTC(),
+		s.emitEnvelopeToConn(c, contracts.EventPresenceSnapshot, "", presenceVer, contracts.PresenceDTO{
+			OnlineCount: onlineCount,
 		})
-
-		s.BroadcastLobbyStats()
 		return nil
 	})
 
-	// 2. Disconnect Handler & Room Cleanup
+	// 2. Disconnect Handler & Lock-Free Room Cleanup
 	s.Server.OnDisconnect("/", func(c gsocketio.Conn, reason string) {
+		authCtx, ok := s.requireAuth(c)
+		if !ok {
+			return
+		}
+
 		sid := c.ID()
+		userID := authCtx.UserID
+
 		s.connsMu.Lock()
 		delete(s.conns, sid)
 		s.connsMu.Unlock()
 
-		s.userSocketMu.Lock()
-		userID := s.socketToUser[sid]
-		delete(s.socketToUser, sid)
-		if userID != "" && s.userToSocket[userID] == sid {
-			delete(s.userToSocket, userID)
+		type leftRoomSnapshot struct {
+			roomID    string
+			remaining int
+			isLocked  bool
+			leaveVer  int64
+			lobbyVer  int64
 		}
+		var leftRooms []leftRoomSnapshot
 
-		// Find rooms where this socket was present and emit room:user-left
+		s.userSocketMu.Lock()
+		delete(s.socketToUser, sid)
+		if sockets := s.userToSockets[userID]; sockets != nil {
+			delete(sockets, sid)
+			if len(sockets) == 0 {
+				delete(s.userToSockets, userID)
+			}
+		}
+		_, stillOnline := s.userToSockets[userID]
+		userWentOffline := !stillOnline
+		onlineCount := len(s.userToSockets)
+
 		for roomID, set := range s.socketRoom {
 			if set[sid] {
 				delete(set, sid)
-				s.Server.ToRoom("/", roomID, "room:user-left", c, map[string]interface{}{
-					"userId":   userID,
-					"user_id":  userID,
-					"socketId": sid,
-					"left_at":  time.Now().UTC(),
-				})
-
+				if s.peerStates[roomID] != nil {
+					delete(s.peerStates[roomID], sid)
+				}
 				remaining := len(set)
+				isLocked := s.lockedRooms[roomID]
+				leaveVer := s.nextRoomVersionLocked(roomID)
+				lobbyVer := s.nextRoomVersionLocked(roomID)
 				if remaining == 0 {
 					delete(s.socketRoom, roomID)
-					s.BroadcastToRoom("lobby", "lobby:room-removed", map[string]interface{}{
-						"id":      roomID,
-						"roomId":  roomID,
-						"room_id": roomID,
-					})
-					s.BroadcastToRoom("lobby", "lobby:room-deleted", map[string]interface{}{
-						"id":      roomID,
-						"roomId":  roomID,
-						"room_id": roomID,
-					})
-				} else {
-					s.BroadcastToRoom("lobby", "lobby:room-updated", map[string]interface{}{
-						"id":           roomID,
-						"roomId":       roomID,
-						"room_id":      roomID,
-						"currentSlots": remaining,
-						"current_slots": remaining,
-						"status":       "LIVE",
-					})
+					delete(s.peerStates, roomID)
+					delete(s.lockedRooms, roomID)
 				}
+				leftRooms = append(leftRooms, leftRoomSnapshot{
+					roomID:    roomID,
+					remaining: remaining,
+					isLocked:  isLocked,
+					leaveVer:  leaveVer,
+					lobbyVer:  lobbyVer,
+				})
 			}
 		}
 		s.userSocketMu.Unlock()
 
-		s.BroadcastLobbyStats()
-		log.Printf("[Socket.IO] Client disconnected: %s (UserID: %s, Reason: %s)", sid, userID, reason)
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		for _, lr := range leftRooms {
+			s.BroadcastRoomEvent(lr.roomID, contracts.EventRoomMemberLeft, lr.leaveVer, contracts.RoomMemberLeftDTO{
+				RoomID:   lr.roomID,
+				UserID:   userID,
+				SocketID: sid,
+				Reason:   "disconnect",
+				LeftAt:   now,
+			})
+			if lr.remaining == 0 {
+				s.BroadcastLobbyEvent(contracts.EventLobbyRoomDeleted, lr.roomID, lr.lobbyVer, contracts.RoomDeletedDTO{
+					RoomID: lr.roomID,
+					Reason: "empty",
+				})
+			} else {
+				s.BroadcastLobbyEvent(contracts.EventLobbyRoomUpdated, lr.roomID, lr.lobbyVer, contracts.RoomLobbyUpdateDTO{
+					RoomID:       lr.roomID,
+					CurrentSlots: lr.remaining,
+					HasFreeSeats: true,
+					Status:       "LIVE",
+					IsLocked:     lr.isLocked,
+				})
+			}
+		}
+
+		if userWentOffline {
+			ver := s.presenceSeq.Add(1)
+			s.BroadcastLobbyEvent(contracts.EventPresenceUpdated, "", ver, contracts.PresenceDTO{
+				OnlineCount: onlineCount,
+			})
+		}
+		_ = reason
 	})
 
 	// 3. Error Handler
 	s.Server.OnError("/", func(c gsocketio.Conn, err error) {
-		log.Printf("[Socket.IO] Connection error (%s): %v", c.ID(), err)
+		if c != nil {
+			log.Printf("[Socket.IO] Connection error (%s): %v", c.ID(), err)
+		}
 	})
 
-	// 3b. Real-Time Lobby Presence & Stats
-	s.Server.OnEvent("/", "lobby:join", func(c gsocketio.Conn, args []json.RawMessage) {
-		c.Join("lobby")
-		count := s.OnlineUserCount()
-		conns := s.TotalConnectionsCount()
-		if conns > count {
-			count = conns
+	// 4. Canonical Lobby & Presence Commands
+	s.Server.OnEvent("/", contracts.CmdLobbyJoin, func(c gsocketio.Conn, args []json.RawMessage) {
+		var req struct {
+			RequestID string `json:"requestId"`
 		}
-		stats := map[string]interface{}{
-			"onlineCount":  count,
-			"online_count": count,
-			"online_users": count,
+		if err := decodeOptionalCommandPayload(args, &req); err != nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid lobby.join payload")
+			return
 		}
-		_ = c.Emit("lobby:stats-update", stats)
-		_ = c.Emit("presence:update", stats)
-	})
-
-	s.Server.OnEvent("/", "lobby:leave", func(c gsocketio.Conn, args []json.RawMessage) {
-		c.Leave("lobby")
-	})
-
-	s.Server.OnEvent("/", "lobby:request-stats", func(c gsocketio.Conn, args []json.RawMessage) {
-		count := s.OnlineUserCount()
-		conns := s.TotalConnectionsCount()
-		if conns > count {
-			count = conns
-		}
-		stats := map[string]interface{}{
-			"onlineCount":  count,
-			"online_count": count,
-			"online_users": count,
-		}
-		_ = c.Emit("lobby:stats-update", stats)
-		_ = c.Emit("presence:update", stats)
-	})
-
-	// 4. Voice Room: Join
-	s.Server.OnEvent("/", "room:join", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
-		}
-
-		roomID := payload.ResolvedRoomID()
-		if roomID == "" {
-			_ = c.Emit("error", map[string]string{"message": "room_id is required"})
+		if _, ok := s.requireAuth(c); !ok {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
 			return
 		}
 
-		userID := payload.ResolvedUserID()
-		if userID == "" {
-			authCtx := s.extractAuthContext(c.Context())
-			userID = authCtx.UserID
+		c.Join("lobby")
+		onlineCount := s.OnlineUserCount()
+		ver := s.presenceSeq.Load()
+		s.emitEnvelopeToConn(c, contracts.EventPresenceSnapshot, "", ver, contracts.PresenceDTO{
+			OnlineCount: onlineCount,
+		})
+		s.emitAckOK(c, req.RequestID, contracts.LobbySubscriptionAckDTO{Subscribed: true})
+	})
+
+	s.Server.OnEvent("/", contracts.CmdLobbyLeave, func(c gsocketio.Conn, args []json.RawMessage) {
+		var req struct {
+			RequestID string `json:"requestId"`
 		}
+		if err := decodeOptionalCommandPayload(args, &req); err != nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid lobby.leave payload")
+			return
+		}
+		if _, ok := s.requireAuth(c); !ok {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
+			return
+		}
+
+		c.Leave("lobby")
+		s.emitAckOK(c, req.RequestID, contracts.LobbySubscriptionAckDTO{Subscribed: false})
+	})
+
+	s.Server.OnEvent("/", contracts.CmdPresenceRequest, func(c gsocketio.Conn, args []json.RawMessage) {
+		var req struct {
+			RequestID string `json:"requestId"`
+		}
+		if err := decodeOptionalCommandPayload(args, &req); err != nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid presence.request payload")
+			return
+		}
+		if _, ok := s.requireAuth(c); !ok {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
+			return
+		}
+
+		onlineCount := s.OnlineUserCount()
+		ver := s.presenceSeq.Load()
+		dto := contracts.PresenceDTO{OnlineCount: onlineCount}
+		s.emitEnvelopeToConn(c, contracts.EventPresenceSnapshot, "", ver, dto)
+		s.emitAckOK(c, req.RequestID, dto)
+	})
+
+	// 5. Canonical Room Lifecycle Commands
+	s.Server.OnEvent("/", contracts.CmdRoomJoin, func(c gsocketio.Conn, args []json.RawMessage) {
+		var req struct {
+			RequestID  string `json:"requestId"`
+			RoomID     string `json:"roomId"`
+			IsMuted    *bool  `json:"isMuted,omitempty"`
+			IsDeafened *bool  `json:"isDeafened,omitempty"`
+			HandRaised *bool  `json:"handRaised,omitempty"`
+		}
+		if err := decodeCommandPayload(args, &req); err != nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid room.join payload")
+			return
+		}
+		authCtx, ok := s.requireAuth(c)
+		if !ok {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
+			return
+		}
+		roomID := strings.TrimSpace(req.RoomID)
+		if roomID == "" {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "roomId is required")
+			return
+		}
+
+		isHost := false
+		if authorizer := s.getRoomAuthorizer(); authorizer != nil {
+			if host, err := authorizer.IsRoomHost(roomID, authCtx.UserID); err == nil && host {
+				isHost = true
+			}
+		}
+
+		isMuted := false
+		if req.IsMuted != nil {
+			isMuted = *req.IsMuted
+		}
+		isDeafened := false
+		if req.IsDeafened != nil {
+			isDeafened = *req.IsDeafened
+		}
+		handRaised := false
+		if req.HandRaised != nil {
+			handRaised = *req.HandRaised
+		}
+
+		var (
+			memberCount    int
+			isLocked       bool
+			joinVersion    int64
+			createdVer     int64
+			lobbyUpdateVer int64
+			snapshot       contracts.RoomSnapshotDTO
+			selfDTO        contracts.ParticipantDTO
+		)
 
 		s.userSocketMu.Lock()
 		if s.socketRoom[roomID] == nil {
 			s.socketRoom[roomID] = make(map[string]bool)
 		}
-		s.socketRoom[roomID][c.ID()] = true
-		if userID != "" {
-			s.userToSocket[userID] = c.ID()
-			s.socketToUser[c.ID()] = userID
-		}
-		memberCount := len(s.socketRoom[roomID])
-		s.userSocketMu.Unlock()
-
-		// Broadcast room presence and status updates to lobby subscribers
-		roomUpdate := map[string]interface{}{
-			"id":            roomID,
-			"roomId":        roomID,
-			"room_id":       roomID,
-			"currentSlots":  memberCount,
-			"current_slots": memberCount,
-			"status":        "LIVE",
-			"hasFreeSeats":  true,
-		}
-		s.BroadcastToRoom("lobby", "lobby:room-updated", roomUpdate)
-		if memberCount == 1 {
-			s.BroadcastToRoom("lobby", "lobby:room-created", roomUpdate)
+		if s.peerStates[roomID] == nil {
+			s.peerStates[roomID] = make(map[string]*peerRoomState)
 		}
 
-		// Join room in gsocketio
-		c.Join(roomID)
-
-		joinData := map[string]interface{}{
-			"userId":   userID,
-			"user_id":  userID,
-			"socketId": c.ID(),
-			"role":     payload.Role,
-			"user":     payload.User,
-			"joined":   time.Now().UTC(),
-		}
-
-		// Broadcast presence to all other peers in the room
-		s.Server.ToRoom("/", roomID, "room:user-joined", c, joinData)
-
-		// Send existing room peers to the joiner
-		existingPeers := make([]map[string]interface{}, 0)
-		s.userSocketMu.RLock()
-		for peerSID := range s.socketRoom[roomID] {
-			if peerSID != c.ID() {
-				peerUID := s.socketToUser[peerSID]
-				existingPeers = append(existingPeers, map[string]interface{}{
-					"socketId": peerSID,
-					"userId":   peerUID,
-					"user": map[string]interface{}{
-						"id": peerUID,
-					},
-				})
+		// Evict any existing socket for the same user in this room to eliminate ghost peers on reload/rejoin
+		var staleSIDs []string
+		for existingSID := range s.socketRoom[roomID] {
+			if existingSID == c.ID() {
+				continue
+			}
+			if existingUID := s.socketToUser[existingSID]; existingUID == authCtx.UserID {
+				staleSIDs = append(staleSIDs, existingSID)
 			}
 		}
-		s.userSocketMu.RUnlock()
+		for _, staleSID := range staleSIDs {
+			delete(s.socketRoom[roomID], staleSID)
+			if s.peerStates[roomID] != nil {
+				delete(s.peerStates[roomID], staleSID)
+			}
+		}
 
-		_ = c.Emit("room:existing-peers", map[string]interface{}{
-			"peers": existingPeers,
+		ps := &peerRoomState{
+			UserID:     authCtx.UserID,
+			Email:      authCtx.Email,
+			Role:       authCtx.Role,
+			IsHost:     isHost,
+			IsMuted:    isMuted,
+			IsDeafened: isDeafened,
+			HandRaised: handRaised,
+		}
+		s.socketRoom[roomID][c.ID()] = true
+		s.peerStates[roomID][c.ID()] = ps
+		memberCount = len(s.socketRoom[roomID])
+		isLocked = s.lockedRooms[roomID]
+
+		joinVersion = s.nextRoomVersionLocked(roomID)
+		if memberCount == 1 {
+			createdVer = s.nextRoomVersionLocked(roomID)
+		}
+		lobbyUpdateVer = s.nextRoomVersionLocked(roomID)
+
+		peers := make([]contracts.PeerSnapshotDTO, 0, memberCount)
+		for peerSID := range s.socketRoom[roomID] {
+			if peerSID == c.ID() {
+				continue
+			}
+			peerState := s.peerStates[roomID][peerSID]
+			if peerState == nil {
+				peerUID := s.socketToUser[peerSID]
+				peerState = &peerRoomState{UserID: peerUID}
+			}
+			peers = append(peers, contracts.PeerSnapshotDTO{
+				SocketID:    peerSID,
+				UserID:      peerState.UserID,
+				Participant: buildParticipantDTO(peerSID, peerState),
+				VoiceState: contracts.VoiceStateDTO{
+					IsMuted:         peerState.IsMuted,
+					IsDeafened:      peerState.IsDeafened,
+					HandRaised:      peerState.HandRaised,
+					IsScreenSharing: peerState.IsScreenSharing,
+				},
+			})
+		}
+		selfDTO = buildParticipantDTO(c.ID(), ps)
+		snapshot = contracts.NewRoomSnapshotDTO(roomID, nil, peers, isLocked)
+		s.userSocketMu.Unlock()
+
+		for _, staleSID := range staleSIDs {
+			s.connsMu.RLock()
+			staleConn := s.conns[staleSID]
+			s.connsMu.RUnlock()
+			if staleConn != nil {
+				staleConn.Leave(roomID)
+			}
+		}
+
+		c.Join(roomID)
+
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		s.emitEnvelopeToConn(c, contracts.EventRoomSnapshot, roomID, joinVersion, snapshot)
+		s.emitEnvelopeToRoomExcept(roomID, contracts.EventRoomMemberJoined, joinVersion, c, contracts.RoomMemberJoinedDTO{
+			RoomID:      roomID,
+			SocketID:    c.ID(),
+			UserID:      authCtx.UserID,
+			Participant: selfDTO,
+			JoinedAt:    now,
 		})
 
-		// Acknowledge join success to the caller
-		_ = c.Emit("room:joined", map[string]interface{}{
-			"roomId":  roomID,
-			"room_id": roomID,
-			"userId":  userID,
-			"user_id": userID,
-			"status":  "ok",
+		if memberCount == 1 {
+			s.BroadcastLobbyEvent(contracts.EventLobbyRoomCreated, roomID, createdVer, contracts.NewRoomSummaryDTO(contracts.RoomSummaryDTO{
+				ID:           roomID,
+				CurrentSlots: memberCount,
+				Status:       "LIVE",
+				StartedAt:    now,
+				HasFreeSeats: true,
+				IsLive:       true,
+				IsLocked:     isLocked,
+				Version:      createdVer,
+				Host:         buildUserSummaryDTO(authCtx.UserID, authCtx.Email),
+			}))
+		}
+		s.BroadcastLobbyEvent(contracts.EventLobbyRoomUpdated, roomID, lobbyUpdateVer, contracts.RoomLobbyUpdateDTO{
+			RoomID:       roomID,
+			CurrentSlots: memberCount,
+			HasFreeSeats: true,
+			Status:       "LIVE",
+			IsLocked:     isLocked,
+		})
+
+		s.emitAckOK(c, req.RequestID, contracts.RoomJoinAckDTO{
+			RoomID:   roomID,
+			SocketID: c.ID(),
+			Version:  joinVersion,
+			Snapshot: snapshot,
 		})
 	})
 
-	// 5. Voice Room: Leave
-	s.Server.OnEvent("/", "room:leave", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
+	s.Server.OnEvent("/", contracts.CmdRoomLeave, func(c gsocketio.Conn, args []json.RawMessage) {
+		var req struct {
+			RequestID string `json:"requestId"`
+			RoomID    string `json:"roomId"`
 		}
-
-		roomID := payload.ResolvedRoomID()
+		if err := decodeCommandPayload(args, &req); err != nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid room.leave payload")
+			return
+		}
+		authCtx, ok := s.requireAuth(c)
+		if !ok {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
+			return
+		}
+		roomID := strings.TrimSpace(req.RoomID)
 		if roomID == "" {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "roomId is required")
 			return
 		}
 
-		userID := payload.ResolvedUserID()
-		if userID == "" {
-			authCtx := s.extractAuthContext(c.Context())
-			userID = authCtx.UserID
-		}
-
 		s.userSocketMu.Lock()
-		remaining := 0
-		if s.socketRoom[roomID] != nil {
-			delete(s.socketRoom[roomID], c.ID())
-			remaining = len(s.socketRoom[roomID])
-			if remaining == 0 {
-				delete(s.socketRoom, roomID)
-			}
+		isMember := s.socketRoom[roomID] != nil && s.socketRoom[roomID][c.ID()]
+		if !isMember {
+			s.userSocketMu.Unlock()
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "not a member of this room")
+			return
+		}
+		delete(s.socketRoom[roomID], c.ID())
+		if s.peerStates[roomID] != nil {
+			delete(s.peerStates[roomID], c.ID())
+		}
+		remaining := len(s.socketRoom[roomID])
+		isLocked := s.lockedRooms[roomID]
+		leaveVer := s.nextRoomVersionLocked(roomID)
+		lobbyVer := s.nextRoomVersionLocked(roomID)
+		if remaining == 0 {
+			delete(s.socketRoom, roomID)
+			delete(s.peerStates, roomID)
+			delete(s.lockedRooms, roomID)
 		}
 		s.userSocketMu.Unlock()
 
 		c.Leave(roomID)
 
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		s.emitEnvelopeToRoomExcept(roomID, contracts.EventRoomMemberLeft, leaveVer, c, contracts.RoomMemberLeftDTO{
+			RoomID:   roomID,
+			UserID:   authCtx.UserID,
+			SocketID: c.ID(),
+			Reason:   "left",
+			LeftAt:   now,
+		})
 		if remaining == 0 {
-			s.BroadcastToRoom("lobby", "lobby:room-removed", map[string]interface{}{
-				"id":      roomID,
-				"roomId":  roomID,
-				"room_id": roomID,
-			})
-			s.BroadcastToRoom("lobby", "lobby:room-deleted", map[string]interface{}{
-				"id":      roomID,
-				"roomId":  roomID,
-				"room_id": roomID,
+			s.BroadcastLobbyEvent(contracts.EventLobbyRoomDeleted, roomID, lobbyVer, contracts.RoomDeletedDTO{
+				RoomID: roomID,
+				Reason: "empty",
 			})
 		} else {
-			s.BroadcastToRoom("lobby", "lobby:room-updated", map[string]interface{}{
-				"id":            roomID,
-				"roomId":        roomID,
-				"room_id":       roomID,
-				"currentSlots":  remaining,
-				"current_slots": remaining,
-				"status":        "LIVE",
+			s.BroadcastLobbyEvent(contracts.EventLobbyRoomUpdated, roomID, lobbyVer, contracts.RoomLobbyUpdateDTO{
+				RoomID:       roomID,
+				CurrentSlots: remaining,
+				HasFreeSeats: true,
+				Status:       "LIVE",
+				IsLocked:     isLocked,
 			})
 		}
 
-		leaveData := map[string]interface{}{
-			"roomId":   roomID,
-			"room_id":  roomID,
-			"userId":   userID,
-			"user_id":  userID,
-			"socketId": c.ID(),
-			"left_at":  time.Now().UTC(),
-		}
-
-		s.Server.ToRoom("/", roomID, "room:user-left", c, leaveData)
-
-		_ = c.Emit("room:left", map[string]interface{}{
-			"roomId":  roomID,
-			"room_id": roomID,
-			"status":  "ok",
+		s.emitAckOK(c, req.RequestID, contracts.RoomLeaveAckDTO{
+			RoomID: roomID,
+			Left:   true,
 		})
 	})
 
-	// 6. WebRTC: Offer Relay
-	s.Server.OnEvent("/", "webrtc:offer", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
+	// 6. WebRTC Signaling Relays (Member-Gated + Same-Room Target Verification)
+	s.Server.OnEvent("/", contracts.CmdWebRTCOffer, func(c gsocketio.Conn, args []json.RawMessage) {
+		var req struct {
+			RequestID      string `json:"requestId"`
+			RoomID         string `json:"roomId"`
+			TargetSocketID string `json:"targetSocketId"`
+			SDP            any    `json:"sdp"`
 		}
-
-		roomID := payload.ResolvedRoomID()
-		targetSocketID := payload.ResolvedTargetSocketID()
-		if roomID == "" || targetSocketID == "" || !s.isSocketMember(roomID, c.ID()) || !s.isSocketMember(roomID, targetSocketID) {
-			_ = c.Emit("error", map[string]string{"message": "unauthorized: signaling peers must share an active room"})
+		if err := decodeCommandPayload(args, &req); err != nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid webrtc.offer payload")
 			return
 		}
-		s.userSocketMu.RLock()
-		senderID := s.socketToUser[c.ID()]
-		s.userSocketMu.RUnlock()
-
-		offerData := map[string]interface{}{
-			"targetSocketId": targetSocketID,
-			"senderSocketId": c.ID(),
-			"senderId":       senderID,
-			"userId":         senderID,
-			"sdp":            payload.SDP,
-			"signal":         payload.Signal,
+		authCtx, ok := s.requireAuth(c)
+		if !ok {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
+			return
 		}
-
-		if targetSocketID != "" {
-			s.connsMu.RLock()
-			targetConn := s.conns[targetSocketID]
-			s.connsMu.RUnlock()
-			if targetConn != nil {
-				_ = targetConn.Emit("webrtc:offer", offerData)
-				return
-			}
+		roomID := strings.TrimSpace(req.RoomID)
+		targetSID := strings.TrimSpace(req.TargetSocketID)
+		if roomID == "" || targetSID == "" || req.SDP == nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "roomId, targetSocketId, and sdp are required")
+			return
+		}
+		if targetSID == c.ID() {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "targetSocketId cannot equal sender socket")
+			return
+		}
+		if !s.isSocketMember(roomID, c.ID()) || !s.isSocketMember(roomID, targetSID) {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "signaling peers must share an active room")
+			return
 		}
 
 		s.connsMu.RLock()
-		targetConn := s.conns[targetSocketID]
+		targetConn := s.conns[targetSID]
 		s.connsMu.RUnlock()
-		if targetConn != nil {
-			_ = targetConn.Emit("webrtc:offer", offerData)
-		}
-	})
-
-	// 7. WebRTC: Answer Relay
-	s.Server.OnEvent("/", "webrtc:answer", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
-		}
-
-		roomID := payload.ResolvedRoomID()
-		targetSocketID := payload.ResolvedTargetSocketID()
-		if roomID == "" || targetSocketID == "" || !s.isSocketMember(roomID, c.ID()) || !s.isSocketMember(roomID, targetSocketID) {
-			_ = c.Emit("error", map[string]string{"message": "unauthorized: signaling peers must share an active room"})
+		if targetConn == nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeNotFound, "target socket is not connected")
 			return
 		}
-		s.userSocketMu.RLock()
-		senderID := s.socketToUser[c.ID()]
-		s.userSocketMu.RUnlock()
 
-		answerData := map[string]interface{}{
-			"targetSocketId": targetSocketID,
-			"senderSocketId": c.ID(),
-			"senderId":       senderID,
-			"userId":         senderID,
-			"sdp":            payload.SDP,
-			"signal":         payload.Signal,
+		s.emitEnvelopeToConn(targetConn, contracts.EventWebRTCOffer, roomID, 0, contracts.WebRTCOfferDTO{
+			RoomID:         roomID,
+			TargetSocketID: targetSID,
+			SenderSocketID: c.ID(),
+			SenderUserID:   authCtx.UserID,
+			SDP:            req.SDP,
+		})
+		s.emitAckOK(c, req.RequestID, contracts.DeliveryAckDTO{Delivered: true})
+	})
+
+	s.Server.OnEvent("/", contracts.CmdWebRTCAnswer, func(c gsocketio.Conn, args []json.RawMessage) {
+		var req struct {
+			RequestID      string `json:"requestId"`
+			RoomID         string `json:"roomId"`
+			TargetSocketID string `json:"targetSocketId"`
+			SDP            any    `json:"sdp"`
 		}
-
-		if targetSocketID != "" {
-			s.connsMu.RLock()
-			targetConn := s.conns[targetSocketID]
-			s.connsMu.RUnlock()
-			if targetConn != nil {
-				_ = targetConn.Emit("webrtc:answer", answerData)
-				return
-			}
+		if err := decodeCommandPayload(args, &req); err != nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid webrtc.answer payload")
+			return
+		}
+		authCtx, ok := s.requireAuth(c)
+		if !ok {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
+			return
+		}
+		roomID := strings.TrimSpace(req.RoomID)
+		targetSID := strings.TrimSpace(req.TargetSocketID)
+		if roomID == "" || targetSID == "" || req.SDP == nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "roomId, targetSocketId, and sdp are required")
+			return
+		}
+		if targetSID == c.ID() {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "targetSocketId cannot equal sender socket")
+			return
+		}
+		if !s.isSocketMember(roomID, c.ID()) || !s.isSocketMember(roomID, targetSID) {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "signaling peers must share an active room")
+			return
 		}
 
 		s.connsMu.RLock()
-		targetConn := s.conns[targetSocketID]
+		targetConn := s.conns[targetSID]
 		s.connsMu.RUnlock()
-		if targetConn != nil {
-			_ = targetConn.Emit("webrtc:answer", answerData)
-		}
-	})
-
-	// 8. WebRTC: ICE Candidate Relay
-	s.Server.OnEvent("/", "webrtc:ice-candidate", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
-		}
-
-		roomID := payload.ResolvedRoomID()
-		targetSocketID := payload.ResolvedTargetSocketID()
-		if roomID == "" || targetSocketID == "" || !s.isSocketMember(roomID, c.ID()) || !s.isSocketMember(roomID, targetSocketID) {
-			_ = c.Emit("error", map[string]string{"message": "unauthorized: signaling peers must share an active room"})
+		if targetConn == nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeNotFound, "target socket is not connected")
 			return
 		}
-		s.userSocketMu.RLock()
-		senderID := s.socketToUser[c.ID()]
-		s.userSocketMu.RUnlock()
 
-		candData := map[string]interface{}{
-			"targetSocketId": targetSocketID,
-			"senderSocketId": c.ID(),
-			"senderId":       senderID,
-			"userId":         senderID,
-			"candidate":      payload.Candidate,
-			"signal":         payload.Signal,
+		s.emitEnvelopeToConn(targetConn, contracts.EventWebRTCAnswer, roomID, 0, contracts.WebRTCAnswerDTO{
+			RoomID:         roomID,
+			TargetSocketID: targetSID,
+			SenderSocketID: c.ID(),
+			SenderUserID:   authCtx.UserID,
+			SDP:            req.SDP,
+		})
+		s.emitAckOK(c, req.RequestID, contracts.DeliveryAckDTO{Delivered: true})
+	})
+
+	s.Server.OnEvent("/", contracts.CmdWebRTCIceCandidate, func(c gsocketio.Conn, args []json.RawMessage) {
+		var req struct {
+			RequestID      string `json:"requestId"`
+			RoomID         string `json:"roomId"`
+			TargetSocketID string `json:"targetSocketId"`
+			Candidate      any    `json:"candidate"`
 		}
-
-		if targetSocketID != "" {
-			s.connsMu.RLock()
-			targetConn := s.conns[targetSocketID]
-			s.connsMu.RUnlock()
-			if targetConn != nil {
-				_ = targetConn.Emit("webrtc:ice-candidate", candData)
-				return
-			}
+		if err := decodeCommandPayload(args, &req); err != nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid webrtc.ice_candidate payload")
+			return
+		}
+		authCtx, ok := s.requireAuth(c)
+		if !ok {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
+			return
+		}
+		roomID := strings.TrimSpace(req.RoomID)
+		targetSID := strings.TrimSpace(req.TargetSocketID)
+		if roomID == "" || targetSID == "" || req.Candidate == nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "roomId, targetSocketId, and candidate are required")
+			return
+		}
+		if targetSID == c.ID() {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "targetSocketId cannot equal sender socket")
+			return
+		}
+		if !s.isSocketMember(roomID, c.ID()) || !s.isSocketMember(roomID, targetSID) {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "signaling peers must share an active room")
+			return
 		}
 
 		s.connsMu.RLock()
-		targetConn := s.conns[targetSocketID]
+		targetConn := s.conns[targetSID]
 		s.connsMu.RUnlock()
-		if targetConn != nil {
-			_ = targetConn.Emit("webrtc:ice-candidate", candData)
+		if targetConn == nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeNotFound, "target socket is not connected")
+			return
+		}
+
+		s.emitEnvelopeToConn(targetConn, contracts.EventWebRTCIceCandidate, roomID, 0, contracts.WebRTCIceCandidateDTO{
+			RoomID:         roomID,
+			TargetSocketID: targetSID,
+			SenderSocketID: c.ID(),
+			SenderUserID:   authCtx.UserID,
+			Candidate:      req.Candidate,
+		})
+		s.emitAckOK(c, req.RequestID, contracts.DeliveryAckDTO{Delivered: true})
+	})
+
+	// 7. Voice State & VAD Commands
+	s.Server.OnEvent("/", contracts.CmdVoiceMute, func(c gsocketio.Conn, args []json.RawMessage) {
+		var req struct {
+			RequestID  string `json:"requestId"`
+			RoomID     string `json:"roomId"`
+			IsMuted    bool   `json:"isMuted"`
+			IsDeafened *bool  `json:"isDeafened,omitempty"`
+			HandRaised *bool  `json:"handRaised,omitempty"`
+		}
+		if err := decodeCommandPayload(args, &req); err != nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid voice.mute payload")
+			return
+		}
+		authCtx, ok := s.requireAuth(c)
+		if !ok {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
+			return
+		}
+		roomID := strings.TrimSpace(req.RoomID)
+		if roomID == "" {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "roomId is required")
+			return
+		}
+
+		s.userSocketMu.Lock()
+		isMember := s.socketRoom[roomID] != nil && s.socketRoom[roomID][c.ID()]
+		if !isMember {
+			s.userSocketMu.Unlock()
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "not a member of this room")
+			return
+		}
+		if s.peerStates[roomID] != nil && s.peerStates[roomID][c.ID()] != nil {
+			ps := s.peerStates[roomID][c.ID()]
+			ps.IsMuted = req.IsMuted
+			if req.IsDeafened != nil {
+				ps.IsDeafened = *req.IsDeafened
+			}
+			if req.HandRaised != nil {
+				ps.HandRaised = *req.HandRaised
+			}
+		}
+		s.userSocketMu.Unlock()
+
+		dto := contracts.VoiceMuteChangedDTO{
+			RoomID:       roomID,
+			UserID:       authCtx.UserID,
+			IsMuted:      req.IsMuted,
+			IsDeafened:   req.IsDeafened,
+			HandRaised:   req.HandRaised,
+			ForcedByHost: false,
+		}
+		s.BroadcastRoomEvent(roomID, contracts.EventVoiceMuteChanged, 0, dto)
+		s.emitAckOK(c, req.RequestID, dto)
+	})
+
+	s.Server.OnEvent("/", contracts.CmdVoiceSpeaking, func(c gsocketio.Conn, args []json.RawMessage) {
+		var req struct {
+			RequestID  string  `json:"requestId"`
+			RoomID     string  `json:"roomId"`
+			IsSpeaking bool    `json:"isSpeaking"`
+			Level      float64 `json:"level"`
+		}
+		if err := decodeCommandPayload(args, &req); err != nil {
+			if req.RequestID != "" {
+				s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid voice.speaking payload")
+			}
+			return
+		}
+		authCtx, ok := s.requireAuth(c)
+		if !ok {
+			if req.RequestID != "" {
+				s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
+			}
+			return
+		}
+		roomID := strings.TrimSpace(req.RoomID)
+		if roomID == "" {
+			if req.RequestID != "" {
+				s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "roomId is required")
+			}
+			return
+		}
+
+		s.userSocketMu.Lock()
+		isMember := s.socketRoom[roomID] != nil && s.socketRoom[roomID][c.ID()]
+		if !isMember {
+			s.userSocketMu.Unlock()
+			if req.RequestID != "" {
+				s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "not a member of this room")
+			}
+			return
+		}
+		if s.peerStates[roomID] != nil && s.peerStates[roomID][c.ID()] != nil {
+			s.peerStates[roomID][c.ID()].IsSpeaking = req.IsSpeaking
+		}
+		s.userSocketMu.Unlock()
+
+		dto := contracts.VoiceSpeakingChangedDTO{
+			RoomID:     roomID,
+			UserID:     authCtx.UserID,
+			IsSpeaking: req.IsSpeaking,
+			Level:      req.Level,
+		}
+		s.emitEnvelopeToRoomExcept(roomID, contracts.EventVoiceSpeakingChanged, 0, c, dto)
+		if req.RequestID != "" {
+			s.emitAckOK(c, req.RequestID, dto)
 		}
 	})
 
-	// 9. Voice: Speaking Indicator & Waveform (Voice Activity Detection 40ms ticks)
-	s.Server.OnEvent("/", "voice:speaking", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
-		}
+	// 8. Screen Share Commands
+	handleScreenShare := func(sharing bool) func(c gsocketio.Conn, args []json.RawMessage) {
+		return func(c gsocketio.Conn, args []json.RawMessage) {
+			var req struct {
+				RequestID string `json:"requestId"`
+				RoomID    string `json:"roomId"`
+			}
+			if err := decodeCommandPayload(args, &req); err != nil {
+				s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid screen_share payload")
+				return
+			}
+			authCtx, ok := s.requireAuth(c)
+			if !ok {
+				s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
+				return
+			}
+			roomID := strings.TrimSpace(req.RoomID)
+			if roomID == "" {
+				s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "roomId is required")
+				return
+			}
 
-		roomID := payload.ResolvedRoomID()
-		if roomID == "" {
+			s.userSocketMu.Lock()
+			isMember := s.socketRoom[roomID] != nil && s.socketRoom[roomID][c.ID()]
+			if !isMember {
+				s.userSocketMu.Unlock()
+				s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "not a member of this room")
+				return
+			}
+			if s.peerStates[roomID] != nil && s.peerStates[roomID][c.ID()] != nil {
+				s.peerStates[roomID][c.ID()].IsScreenSharing = sharing
+			}
+			s.userSocketMu.Unlock()
+
+			dto := contracts.ScreenShareDTO{
+				RoomID:    roomID,
+				UserID:    authCtx.UserID,
+				SocketID:  c.ID(),
+				IsSharing: sharing,
+			}
+			evName := contracts.EventScreenShareStopped
+			if sharing {
+				evName = contracts.EventScreenShareStarted
+			}
+			s.BroadcastRoomEvent(roomID, evName, 0, dto)
+			s.emitAckOK(c, req.RequestID, dto)
+		}
+	}
+	s.Server.OnEvent("/", contracts.CmdScreenShareStart, handleScreenShare(true))
+	s.Server.OnEvent("/", contracts.CmdScreenShareStop, handleScreenShare(false))
+
+	// 9. Chat Reaction Command (Chat message creation is strictly REST POST /rooms/:id/messages)
+	s.Server.OnEvent("/", contracts.CmdChatReact, func(c gsocketio.Conn, args []json.RawMessage) {
+		var req struct {
+			RequestID string `json:"requestId"`
+			RoomID    string `json:"roomId"`
+			MessageID string `json:"messageId"`
+			Emoji     string `json:"emoji"`
+		}
+		if err := decodeCommandPayload(args, &req); err != nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid chat.react payload")
+			return
+		}
+		authCtx, ok := s.requireAuth(c)
+		if !ok {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
+			return
+		}
+		roomID := strings.TrimSpace(req.RoomID)
+		messageID := strings.TrimSpace(req.MessageID)
+		emoji := strings.TrimSpace(req.Emoji)
+		if roomID == "" || messageID == "" || emoji == "" {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "roomId, messageId, and emoji are required")
+			return
+		}
+		if !s.isSocketMember(roomID, c.ID()) {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "not a member of this room")
 			return
 		}
 
-		s.userSocketMu.RLock()
-		inRoom := s.socketRoom[roomID] != nil && s.socketRoom[roomID][c.ID()]
-		actualUserID := s.socketToUser[c.ID()]
-		s.userSocketMu.RUnlock()
-
-		if !inRoom {
-			return
-		}
-
-		userID := actualUserID
-		if userID == "" {
-			userID = payload.ResolvedUserID()
-		}
-		if userID == "" {
-			authCtx := s.extractAuthContext(c.Context())
-			userID = authCtx.UserID
-		}
-
-		isSpeaking := false
-		if payload.IsSpeakingCamel != nil {
-			isSpeaking = *payload.IsSpeakingCamel
-		} else if payload.IsSpeaking != nil {
-			isSpeaking = *payload.IsSpeaking
-		} else if payload.Speaking != nil {
-			isSpeaking = *payload.Speaking
-		}
-
-		speakingData := map[string]interface{}{
-			"roomId":     roomID,
-			"room_id":    roomID,
-			"userId":     userID,
-			"user_id":    userID,
-			"isSpeaking": isSpeaking,
-			"speaking":   isSpeaking,
-			"level":      payload.Level,
-		}
-
-		s.Server.ToRoom("/", roomID, "voice:speaking-changed", c, speakingData)
-		s.Server.ToRoom("/", roomID, "room:speaking_state", c, speakingData)
-	})
-
-	// 10. Voice: State Toggle (Mute / Deafen / Raise Hand)
-	s.Server.OnEvent("/", "voice:state-toggle", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
-		}
-
-		roomID := payload.ResolvedRoomID()
-		if roomID == "" {
-			return
-		}
-
-		s.userSocketMu.RLock()
-		inRoom := s.socketRoom[roomID] != nil && s.socketRoom[roomID][c.ID()]
-		actualUserID := s.socketToUser[c.ID()]
-		s.userSocketMu.RUnlock()
-
-		if !inRoom {
-			_ = c.Emit("error", map[string]string{"message": "unauthorized: not a member of room"})
-			return
-		}
-
-		userID := actualUserID
-		if userID == "" {
-			userID = payload.ResolvedUserID()
-		}
-		if userID == "" {
-			authCtx := s.extractAuthContext(c.Context())
-			userID = authCtx.UserID
-		}
-
-		isMuted := false
-		if payload.IsMuted != nil {
-			isMuted = *payload.IsMuted
-		} else if payload.IsMute != nil {
-			isMuted = *payload.IsMute
-		}
-
-		isDeafened := false
-		if payload.IsDeafened != nil {
-			isDeafened = *payload.IsDeafened
-		}
-
-		handRaised := false
-		if payload.HandRaised != nil {
-			handRaised = *payload.HandRaised
-		}
-
-		stateData := map[string]interface{}{
-			"roomId":     roomID,
-			"room_id":    roomID,
-			"userId":     userID,
-			"user_id":    userID,
-			"isMuted":    isMuted,
-			"is_muted":   isMuted,
-			"isDeafened": isDeafened,
-			"handRaised": handRaised,
-		}
-
-		s.Server.ToRoom("/", roomID, "voice:state-updated", c, stateData)
-		s.Server.ToRoom("/", roomID, "room:mute", c, stateData)
-	})
-
-	// 11. In-Room Chat: Send
-	s.Server.OnEvent("/", "chat:send", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
-		}
-
-		roomID := payload.ResolvedRoomID()
-		if roomID == "" {
-			return
-		}
-
-		s.userSocketMu.RLock()
-		inRoom := s.socketRoom[roomID] != nil && s.socketRoom[roomID][c.ID()]
-		actualUserID := s.socketToUser[c.ID()]
-		s.userSocketMu.RUnlock()
-
-		if !inRoom {
-			_ = c.Emit("error", map[string]string{"message": "unauthorized: not a member of room"})
-			return
-		}
-
-		userID := actualUserID
-		if userID == "" {
-			userID = payload.ResolvedUserID()
-		}
-		if userID == "" {
-			authCtx := s.extractAuthContext(c.Context())
-			userID = authCtx.UserID
-		}
-
-		msgType := payload.Type
-		if msgType == "" {
-			msgType = "TEXT"
-		}
-
-		msgData := map[string]interface{}{
-			"id":            "msg_" + time.Now().Format("20060102150405"),
-			"roomId":        roomID,
-			"senderId":      userID,
-			"content":       payload.Content,
-			"type":          msgType,
-			"isHighlighted": msgType == "IDIOM",
-			"reactions":     []string{},
-			"timestamp":     time.Now().UTC(),
-		}
-
-		s.Server.ToRoom("/", roomID, "chat:new-message", nil, msgData)
-	})
-
-	// 12. In-Room Chat: Reaction
-	s.Server.OnEvent("/", "chat:reaction-add", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
-		}
-
-		roomID := payload.ResolvedRoomID()
-		if roomID == "" {
-			return
-		}
-
-		s.Server.ToRoom("/", roomID, "chat:reaction-add", c, map[string]interface{}{
-			"roomId":    roomID,
-			"messageId": payload.MessageID,
-			"emoji":     payload.Emoji,
-			"userId":    payload.ResolvedUserID(),
+		s.BroadcastRoomEvent(roomID, contracts.EventChatReactionUpdated, 0, contracts.ChatReactionUpdatedDTO{
+			RoomID:    roomID,
+			MessageID: messageID,
+			Emoji:     emoji,
+			UserID:    authCtx.UserID,
+		})
+		s.emitAckOK(c, req.RequestID, contracts.ChatReactAckDTO{
+			RoomID:    roomID,
+			MessageID: messageID,
+			Emoji:     emoji,
 		})
 	})
 
-	// 13. Host Moderation: Kick User
-	s.Server.OnEvent("/", "host:kick-user", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
+	// 10. Host Moderation Commands (Fail Closed via RoomAuthorizer.IsRoomHost)
+	s.Server.OnEvent("/", contracts.CmdModerationMuteParticipant, func(c gsocketio.Conn, args []json.RawMessage) {
+		var req struct {
+			RequestID    string `json:"requestId"`
+			RoomID       string `json:"roomId"`
+			TargetUserID string `json:"targetUserId"`
+			IsMuted      *bool  `json:"isMuted,omitempty"`
+			Reason       string `json:"reason,omitempty"`
+		}
+		if err := decodeCommandPayload(args, &req); err != nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid moderation.mute_participant payload")
+			return
+		}
+		authCtx, ok := s.requireAuth(c)
+		if !ok {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
+			return
+		}
+		roomID := strings.TrimSpace(req.RoomID)
+		targetUserID := strings.TrimSpace(req.TargetUserID)
+		if roomID == "" || targetUserID == "" {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "roomId and targetUserId are required")
+			return
+		}
+		if !s.isSocketMember(roomID, c.ID()) {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "not a member of this room")
+			return
+		}
+		authorizer := s.getRoomAuthorizer()
+		if authorizer == nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "host authorization unavailable")
+			return
+		}
+		isHost, err := authorizer.IsRoomHost(roomID, authCtx.UserID)
+		if err != nil || !isHost {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "only the room host can mute participants")
+			return
 		}
 
-		roomID := payload.ResolvedRoomID()
-		targetUserID := payload.TargetUserID
-		if targetUserID == "" {
-			targetUserID = payload.ResolvedTargetSocketID()
+		muted := true
+		if req.IsMuted != nil {
+			muted = *req.IsMuted
 		}
 
-		s.userSocketMu.RLock()
-		targetSocketID := s.userToSocket[targetUserID]
-		if targetSocketID == "" {
-			targetSocketID = targetUserID
+		s.userSocketMu.Lock()
+		if s.peerStates[roomID] != nil {
+			for _, ps := range s.peerStates[roomID] {
+				if ps != nil && ps.UserID == targetUserID {
+					ps.IsMuted = muted
+				}
+			}
 		}
-		s.userSocketMu.RUnlock()
+		s.userSocketMu.Unlock()
 
-		if targetSocketID != "" {
-			s.connsMu.RLock()
-			targetConn := s.conns[targetSocketID]
-			s.connsMu.RUnlock()
-			if targetConn != nil {
-				_ = targetConn.Emit("room:kicked", map[string]interface{}{
-					"roomId": roomID,
-					"reason": "Host removed you from the voice room",
+		reason := strings.TrimSpace(req.Reason)
+		if reason == "" && muted {
+			reason = "Host muted your microphone"
+		}
+
+		s.BroadcastRoomEvent(roomID, contracts.EventVoiceMuteChanged, 0, contracts.VoiceMuteChangedDTO{
+			RoomID:       roomID,
+			UserID:       targetUserID,
+			IsMuted:      muted,
+			ForcedByHost: true,
+			Reason:       reason,
+		})
+		s.emitAckOK(c, req.RequestID, contracts.ModerationMuteAckDTO{
+			RoomID:       roomID,
+			TargetUserID: targetUserID,
+			IsMuted:      muted,
+		})
+	})
+
+	s.Server.OnEvent("/", contracts.CmdModerationKickParticipant, func(c gsocketio.Conn, args []json.RawMessage) {
+		var req struct {
+			RequestID    string `json:"requestId"`
+			RoomID       string `json:"roomId"`
+			TargetUserID string `json:"targetUserId"`
+			Reason       string `json:"reason,omitempty"`
+		}
+		if err := decodeCommandPayload(args, &req); err != nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid moderation.kick_participant payload")
+			return
+		}
+		authCtx, ok := s.requireAuth(c)
+		if !ok {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
+			return
+		}
+		roomID := strings.TrimSpace(req.RoomID)
+		targetUserID := strings.TrimSpace(req.TargetUserID)
+		if roomID == "" || targetUserID == "" {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "roomId and targetUserId are required")
+			return
+		}
+		if !s.isSocketMember(roomID, c.ID()) {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "not a member of this room")
+			return
+		}
+		authorizer := s.getRoomAuthorizer()
+		if authorizer == nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "host authorization unavailable")
+			return
+		}
+		isHost, err := authorizer.IsRoomHost(roomID, authCtx.UserID)
+		if err != nil || !isHost {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "only the room host can kick participants")
+			return
+		}
+
+		var (
+			targetSIDs []string
+			remaining  int
+			isLocked   bool
+			leaveVer   int64
+			lobbyVer   int64
+		)
+
+		s.userSocketMu.Lock()
+		for sid := range s.socketRoom[roomID] {
+			ps := s.peerStates[roomID][sid]
+			uid := s.socketToUser[sid]
+			if (ps != nil && ps.UserID == targetUserID) || uid == targetUserID {
+				targetSIDs = append(targetSIDs, sid)
+			}
+		}
+		for _, sid := range targetSIDs {
+			delete(s.socketRoom[roomID], sid)
+			if s.peerStates[roomID] != nil {
+				delete(s.peerStates[roomID], sid)
+			}
+		}
+		remaining = len(s.socketRoom[roomID])
+		isLocked = s.lockedRooms[roomID]
+		leaveVer = s.nextRoomVersionLocked(roomID)
+		lobbyVer = s.nextRoomVersionLocked(roomID)
+		if remaining == 0 {
+			delete(s.socketRoom, roomID)
+			delete(s.peerStates, roomID)
+			delete(s.lockedRooms, roomID)
+		}
+		s.userSocketMu.Unlock()
+
+		targetConns := make([]gsocketio.Conn, 0, len(targetSIDs))
+		s.connsMu.RLock()
+		for _, sid := range targetSIDs {
+			if tc := s.conns[sid]; tc != nil {
+				targetConns = append(targetConns, tc)
+			}
+		}
+		s.connsMu.RUnlock()
+
+		kickReason := strings.TrimSpace(req.Reason)
+		if kickReason == "" {
+			kickReason = "Host removed you from the voice room"
+		}
+
+		kickDTO := contracts.ModerationParticipantKickedDTO{
+			RoomID:       roomID,
+			TargetUserID: targetUserID,
+			KickedBy:     authCtx.UserID,
+			Reason:       kickReason,
+		}
+		for _, tc := range targetConns {
+			tc.Leave(roomID)
+			s.emitEnvelopeToConn(tc, contracts.EventModerationParticipantKicked, roomID, 0, kickDTO)
+		}
+
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		if len(targetSIDs) == 0 {
+			s.BroadcastRoomEvent(roomID, contracts.EventRoomMemberLeft, leaveVer, contracts.RoomMemberLeftDTO{
+				RoomID:   roomID,
+				UserID:   targetUserID,
+				SocketID: "",
+				Reason:   "kicked",
+				LeftAt:   now,
+			})
+		} else {
+			for _, sid := range targetSIDs {
+				s.BroadcastRoomEvent(roomID, contracts.EventRoomMemberLeft, leaveVer, contracts.RoomMemberLeftDTO{
+					RoomID:   roomID,
+					UserID:   targetUserID,
+					SocketID: sid,
+					Reason:   "kicked",
+					LeftAt:   now,
 				})
-				targetConn.Leave(roomID)
 			}
 		}
 
-		s.Server.ToRoom("/", roomID, "room:user-left", c, map[string]interface{}{
-			"userId":   targetUserID,
-			"socketId": targetSocketID,
-			"reason":   "kicked",
+		if remaining == 0 {
+			s.BroadcastLobbyEvent(contracts.EventLobbyRoomDeleted, roomID, lobbyVer, contracts.RoomDeletedDTO{
+				RoomID: roomID,
+				Reason: "empty",
+			})
+		} else {
+			s.BroadcastLobbyEvent(contracts.EventLobbyRoomUpdated, roomID, lobbyVer, contracts.RoomLobbyUpdateDTO{
+				RoomID:       roomID,
+				CurrentSlots: remaining,
+				HasFreeSeats: true,
+				Status:       "LIVE",
+				IsLocked:     isLocked,
+			})
+		}
+
+		s.emitAckOK(c, req.RequestID, contracts.ModerationKickAckDTO{
+			RoomID:       roomID,
+			TargetUserID: targetUserID,
 		})
 	})
-	// Backwards compatibility event listeners
-	s.Server.OnEvent("/", "room:raise_hand", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
+
+	s.Server.OnEvent("/", contracts.CmdModerationLockRoom, func(c gsocketio.Conn, args []json.RawMessage) {
+		var req struct {
+			RequestID string `json:"requestId"`
+			RoomID    string `json:"roomId"`
+			IsLocked  bool   `json:"isLocked"`
 		}
-		roomID := payload.ResolvedRoomID()
+		if err := decodeCommandPayload(args, &req); err != nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid moderation.lock_room payload")
+			return
+		}
+		authCtx, ok := s.requireAuth(c)
+		if !ok {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
+			return
+		}
+		roomID := strings.TrimSpace(req.RoomID)
 		if roomID == "" {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "roomId is required")
 			return
 		}
-		userID := payload.ResolvedUserID()
-		if userID == "" {
-			authCtx := s.extractAuthContext(c.Context())
-			userID = authCtx.UserID
+		if !s.isSocketMember(roomID, c.ID()) {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "not a member of this room")
+			return
 		}
-		s.Server.ToRoom("/", roomID, "room:raise_hand", c, map[string]interface{}{
-			"room_id": roomID,
-			"user_id": userID,
-			"time":    time.Now().UTC(),
+		authorizer := s.getRoomAuthorizer()
+		if authorizer == nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "host authorization unavailable")
+			return
+		}
+		isHost, err := authorizer.IsRoomHost(roomID, authCtx.UserID)
+		if err != nil || !isHost {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeForbidden, "only the room host can lock the room")
+			return
+		}
+
+		s.userSocketMu.Lock()
+		if s.lockedRooms == nil {
+			s.lockedRooms = make(map[string]bool)
+		}
+		s.lockedRooms[roomID] = req.IsLocked
+		remaining := len(s.socketRoom[roomID])
+		lockVer := s.nextRoomVersionLocked(roomID)
+		lobbyVer := s.nextRoomVersionLocked(roomID)
+		s.userSocketMu.Unlock()
+
+		s.BroadcastRoomEvent(roomID, contracts.EventModerationRoomLocked, lockVer, contracts.ModerationRoomLockedDTO{
+			RoomID:    roomID,
+			IsLocked:  req.IsLocked,
+			UpdatedBy: authCtx.UserID,
+		})
+		s.BroadcastLobbyEvent(contracts.EventLobbyRoomUpdated, roomID, lobbyVer, contracts.RoomLobbyUpdateDTO{
+			RoomID:       roomID,
+			CurrentSlots: remaining,
+			HasFreeSeats: !req.IsLocked,
+			Status:       "LIVE",
+			IsLocked:     req.IsLocked,
+		})
+		s.emitAckOK(c, req.RequestID, contracts.ModerationLockAckDTO{
+			RoomID:   roomID,
+			IsLocked: req.IsLocked,
 		})
 	})
 
-	s.Server.OnEvent("/", "webrtc:signal", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
+	// 11. Network Mesh Latency Ping (responds via correlated command.ack)
+	s.Server.OnEvent("/", contracts.CmdMeshPing, func(c gsocketio.Conn, args []json.RawMessage) {
+		var req struct {
+			RequestID string `json:"requestId"`
 		}
-		roomID := payload.ResolvedRoomID()
-		if roomID == "" {
+		if err := decodeOptionalCommandPayload(args, &req); err != nil {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeValidation, "invalid mesh.ping payload")
 			return
 		}
-		senderID := payload.ResolvedUserID()
-		if senderID == "" {
-			authCtx := s.extractAuthContext(c.Context())
-			senderID = authCtx.UserID
+		if _, ok := s.requireAuth(c); !ok {
+			s.emitAckError(c, req.RequestID, contracts.ErrCodeUnauthorized, "unauthorized")
+			return
 		}
-		targetID := payload.ResolvedTargetSocketID()
-		s.Server.ToRoom("/", roomID, "webrtc:signal", c, map[string]interface{}{
-			"room_id":   roomID,
-			"sender_id": senderID,
-			"target_id": targetID,
-			"signal":    payload.Signal,
+		s.emitAckOK(c, req.RequestID, contracts.MeshPingAckDTO{
+			ServerTime: time.Now().UTC().UnixMilli(),
 		})
-	})
-
-	// 14. Network Mesh Latency Ping/Pong
-	s.Server.OnEvent("/", "mesh:ping", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload interface{}
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
-		}
-		_ = c.Emit("mesh:pong", payload)
-	})
-
-	// 15. Voice Room: Screen Share Relay
-	s.Server.OnEvent("/", "room:screen-share", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
-		}
-
-		roomID := payload.ResolvedRoomID()
-		if roomID == "" {
-			return
-		}
-
-		s.userSocketMu.RLock()
-		inRoom := s.socketRoom[roomID] != nil && s.socketRoom[roomID][c.ID()]
-		actualUserID := s.socketToUser[c.ID()]
-		s.userSocketMu.RUnlock()
-
-		if !inRoom {
-			_ = c.Emit("error", map[string]string{"message": "unauthorized: not a member of room"})
-			return
-		}
-
-		userID := actualUserID
-		if userID == "" {
-			userID = payload.ResolvedUserID()
-		}
-		if userID == "" {
-			authCtx := s.extractAuthContext(c.Context())
-			userID = authCtx.UserID
-		}
-
-		isSharing := false
-		if payload.IsSharing != nil {
-			isSharing = *payload.IsSharing
-		}
-
-		s.Server.ToRoom("/", roomID, "room:screen-share-changed", c, map[string]interface{}{
-			"roomId":    roomID,
-			"room_id":   roomID,
-			"userId":    userID,
-			"user_id":   userID,
-			"socketId":  c.ID(),
-			"isSharing": isSharing,
-		})
-	})
-
-	// 16. Host Moderation: Mute User
-	s.Server.OnEvent("/", "host:mute-user", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
-		}
-
-		roomID := payload.ResolvedRoomID()
-		targetUserID := payload.TargetUserID
-		if targetUserID == "" {
-			targetUserID = payload.ResolvedTargetSocketID()
-		}
-
-		s.userSocketMu.RLock()
-		targetSocketID := s.userToSocket[targetUserID]
-		if targetSocketID == "" {
-			targetSocketID = targetUserID
-		}
-		s.userSocketMu.RUnlock()
-
-		if targetSocketID != "" {
-			s.connsMu.RLock()
-			targetConn := s.conns[targetSocketID]
-			s.connsMu.RUnlock()
-			if targetConn != nil {
-				_ = targetConn.Emit("room:force-muted", map[string]interface{}{
-					"roomId": roomID,
-					"reason": "Host muted your microphone",
-				})
-			}
-		}
-
-		s.Server.ToRoom("/", roomID, "voice:state-updated", c, map[string]interface{}{
-			"roomId":   roomID,
-			"room_id":  roomID,
-			"userId":   targetUserID,
-			"user_id":  targetUserID,
-			"isMuted":  true,
-			"is_muted": true,
-		})
-	})
-
-	// 17. Host Moderation: Lock Room
-	s.Server.OnEvent("/", "host:lock-room", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload RoomEventPayload
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
-		}
-
-		roomID := payload.ResolvedRoomID()
-		if roomID == "" {
-			return
-		}
-
-		isLocked := false
-		if payload.IsLocked != nil {
-			isLocked = *payload.IsLocked
-		}
-
-		s.Server.ToRoom("/", roomID, "room:lock-changed", nil, map[string]interface{}{
-			"roomId":   roomID,
-			"isLocked": isLocked,
-		})
-	})
-
-	// 18. Live Floating Reactions
-	s.Server.OnEvent("/", "reaction:send", func(c gsocketio.Conn, args []json.RawMessage) {
-		var payload struct {
-			RoomID   string      `json:"roomId"`
-			Reaction interface{} `json:"reaction"`
-		}
-		if len(args) > 0 {
-			_ = json.Unmarshal(args[0], &payload)
-		}
-
-		if payload.RoomID == "" {
-			return
-		}
-
-		s.Server.ToRoom("/", payload.RoomID, "reaction:new-reaction", c, payload.Reaction)
 	})
 }
 
@@ -1026,58 +1425,12 @@ func (s *SocketServer) isSocketMember(roomID, socketID string) bool {
 	return s.socketRoom[roomID] != nil && s.socketRoom[roomID][socketID]
 }
 
-// extractAuthContext parses handshake payload or query params into typed AuthContext
-func (s *SocketServer) extractAuthContext(raw interface{}) *AuthContext {
-	ctx := &AuthContext{}
-	if raw == nil {
-		return ctx
-	}
-
-	if ac, ok := raw.(*AuthContext); ok {
-		return ac
-	}
-
-	if m, ok := raw.(map[string]interface{}); ok {
-		if t, ok := m["token"].(string); ok {
-			ctx.Token = strings.TrimPrefix(t, "Bearer ")
-		}
-		if u, ok := m["user_id"].(string); ok {
-			ctx.UserID = u
-		} else if u, ok := m["userId"].(string); ok {
-			ctx.UserID = u
-		}
-		if e, ok := m["email"].(string); ok {
-			ctx.Email = e
-		}
-		if r, ok := m["role"].(string); ok {
-			ctx.Role = r
-		}
-	}
-
-	// Validate JWT token if provided
-	if ctx.Token != "" && len(jwt.SecretKey) > 0 {
-		if claims, err := jwt.ParseToken(ctx.Token); err == nil && claims != nil {
-			if ctx.UserID == "" {
-				ctx.UserID = claims.UserID
-			}
-			if ctx.Email == "" {
-				ctx.Email = claims.Email
-			}
-			if ctx.Role == "" {
-				ctx.Role = claims.Role
-			}
-		}
-	}
-
-	return ctx
-}
-
-// Serve starts the socket transport acceptance loop
+// Serve starts the socket transport acceptance loop.
 func (s *SocketServer) Serve() error {
 	return s.Server.Serve()
 }
 
-// Close gracefully closes the socket server
+// Close gracefully closes the socket server.
 func (s *SocketServer) Close() error {
 	return s.Server.Close()
 }
@@ -1156,7 +1509,7 @@ func (s *SocketServer) handleCORS(w http.ResponseWriter, r *http.Request) (norma
 	return origin, true, false
 }
 
-// ServeHTTP implements net/http.Handler with allowlisted CORS headers and Hijacker-safe guard for Socket.IO
+// ServeHTTP implements net/http.Handler with allowlisted CORS headers and Hijacker-safe guard for Socket.IO.
 func (s *SocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	origin, allowed, preflightDone := s.handleCORS(w, r)
 	if !allowed || preflightDone {
@@ -1170,7 +1523,7 @@ func (s *SocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.Server.ServeHTTP(guarded, r)
 }
 
-// GinHandler wraps the socket server into a Gin-compatible handler with allowlisted CORS and Hijacker support
+// GinHandler wraps the socket server into a Gin-compatible handler with allowlisted CORS and Hijacker support.
 func (s *SocketServer) GinHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin, allowed, preflightDone := s.handleCORS(c.Writer, c.Request)

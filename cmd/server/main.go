@@ -14,6 +14,7 @@ import (
 	"nimble-voice-backend/db"
 	_ "nimble-voice-backend/docs"
 	"nimble-voice-backend/module"
+	"nimble-voice-backend/module/v1/room"
 	"nimble-voice-backend/pkg/logger"
 	"nimble-voice-backend/server"
 	"nimble-voice-backend/utils/fileutil"
@@ -59,6 +60,9 @@ func main() {
 	sockServer, err := server.NewSocketServerWithOrigins(cfg.CORSAllowedOrigins)
 	if err != nil {
 		log.Fatalf("Socket server init error: %v", err)
+	}
+	if database != nil {
+		sockServer.SetRoomAuthorizer(room.NewAuthorizer(database))
 	}
 	defer sockServer.Close()
 

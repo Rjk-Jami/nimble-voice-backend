@@ -3,8 +3,8 @@ package chat
 import (
 	"net/http"
 
+	"nimble-voice-backend/internal/contracts"
 	"nimble-voice-backend/middleware"
-	"nimble-voice-backend/server"
 	"nimble-voice-backend/utils/httpx"
 
 	"github.com/gin-gonic/gin"
@@ -50,8 +50,8 @@ func ChatRouter(router *gin.RouterGroup, controller ChatController) {
 	})
 }
 
-func ChatModule(router *gin.RouterGroup, db *gorm.DB, sockServer ...*server.SocketServer) {
-	service := NewChatService(db, sockServer...)
+func ChatModule(router *gin.RouterGroup, db *gorm.DB, broadcasters ...contracts.RoomBroadcaster) {
+	service := NewChatService(db, broadcasters...)
 	controller := NewChatController(service)
 	ChatRouter(router, controller)
 }
