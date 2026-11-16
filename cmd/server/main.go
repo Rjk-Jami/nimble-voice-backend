@@ -66,9 +66,6 @@ func main() {
 	}
 	defer sockServer.Close()
 
-	presenceServer := server.NewPresenceServer(cfg.CORSAllowedOrigins, cfg.PresencePingInterval, cfg.PresencePongTimeout)
-	defer presenceServer.Close()
-
 	go func() {
 		if err := sockServer.Serve(); err != nil {
 			log.Printf("Socket.IO server loop ended: %v", err)
@@ -76,7 +73,7 @@ func main() {
 	}()
 
 	// 6. Setup Router with CORS and Socket.IO handler mounted
-	router := module.SetupRouter(cfg, database, sockServer, presenceServer)
+	router := module.SetupRouter(cfg, database, sockServer)
 
 	// 7. Initialize HTTP Server
 	httpServer := &http.Server{

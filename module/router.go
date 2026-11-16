@@ -21,7 +21,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func SetupRouter(cfg *config.Config, db *gorm.DB, socketServer *server.SocketServer, presenceServers ...*server.PresenceServer) *gin.Engine {
+func SetupRouter(cfg *config.Config, db *gorm.DB, socketServer *server.SocketServer) *gin.Engine {
 	router := gin.New()
 
 	var trustedProxies []string
@@ -85,14 +85,6 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, socketServer *server.SocketSer
 	router.GET("/health", func(ctx *gin.Context) {
 		ctx.JSON(200, gin.H{"status": "healthy", "time": time.Now().UTC()})
 	})
-
-	// Native WebSocket presence is separate from Socket.IO voice signaling.
-	if len(presenceServers) > 0 && presenceServers[0] != nil {
-		presenceServer := presenceServers[0]
-		router.GET("/ws/presence", func(ctx *gin.Context) {
-			presenceServer.ServeHTTP(ctx.Writer, ctx.Request)
-		})
-	}
 
 	// Swagger API Documentation UI (explicitly gated by config)
 	if cfg != nil && cfg.SwaggerEnabled {

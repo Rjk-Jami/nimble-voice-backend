@@ -42,9 +42,8 @@ type peerRoomState struct {
 // SocketServer wraps gsocketio.Server with JWT-authenticated voice room routing and canonical event emission.
 type SocketServer struct {
 	Server         *gsocketio.Server
+	presenceStore  PresenceStore
 	userSocketMu   sync.RWMutex
-	userToSockets  map[string]map[string]struct{}      // UserID -> Set of SocketIDs
-	socketToUser   map[string]string                   // SocketID -> UserID
 	socketRoom     map[string]map[string]bool          // RoomID -> Set of SocketIDs
 	peerStates     map[string]map[string]*peerRoomState // RoomID -> SocketID -> state
 	roomVersions   map[string]int64                    // RoomID -> monotonic version
@@ -81,8 +80,7 @@ func NewSocketServerWithOrigins(allowedOrigins []string, customOpts ...*gsocketi
 	srv := gsocketio.New(opts)
 	s := &SocketServer{
 		Server:        srv,
-		userToSockets: make(map[string]map[string]struct{}),
-		socketToUser:  make(map[string]string),
+		presenceStore: NewMemoryPresenceStore(),
 		socketRoom:    make(map[string]map[string]bool),
 		peerStates:    make(map[string]map[string]*peerRoomState),
 		roomVersions:  make(map[string]int64),
@@ -138,11 +136,17 @@ func (s *SocketServer) isOriginAllowed(origin string) bool {
 	return ok
 }
 
+// PresenceStore returns the server's presence store.
+func (s *SocketServer) PresenceStore() PresenceStore {
+	return s.presenceStore
+}
+
 // OnlineUserCount returns the count of currently connected unique authenticated users.
 func (s *SocketServer) OnlineUserCount() int {
-	s.userSocketMu.RLock()
-	defer s.userSocketMu.RUnlock()
-	return len(s.userToSockets)
+	if s.presenceStore == nil {
+		return 0
+	}
+	return s.presenceStore.OnlineCount()
 }
 
 // TotalConnectionsCount returns the count of currently active raw socket connections.
@@ -340,15 +344,7 @@ func (s *SocketServer) registerHandlers() {
 		s.conns[c.ID()] = c
 		s.connsMu.Unlock()
 
-		s.userSocketMu.Lock()
-		s.socketToUser[c.ID()] = authCtx.UserID
-		if s.userToSockets[authCtx.UserID] == nil {
-			s.userToSockets[authCtx.UserID] = make(map[string]struct{})
-		}
-		s.userToSockets[authCtx.UserID][c.ID()] = struct{}{}
-		firstUserSocket := len(s.userToSockets[authCtx.UserID]) == 1
-		onlineCount := len(s.userToSockets)
-		s.userSocketMu.Unlock()
+		firstUserSocket, onlineCount := s.presenceStore.AddConnection(authCtx.UserID, c.ID())
 
 		var presenceVer int64
 		if firstUserSocket {
@@ -380,6 +376,8 @@ func (s *SocketServer) registerHandlers() {
 		delete(s.conns, sid)
 		s.connsMu.Unlock()
 
+		userWentOffline, onlineCount := s.presenceStore.RemoveConnection(userID, sid)
+
 		type leftRoomSnapshot struct {
 			roomID    string
 			remaining int
@@ -390,17 +388,6 @@ func (s *SocketServer) registerHandlers() {
 		var leftRooms []leftRoomSnapshot
 
 		s.userSocketMu.Lock()
-		delete(s.socketToUser, sid)
-		if sockets := s.userToSockets[userID]; sockets != nil {
-			delete(sockets, sid)
-			if len(sockets) == 0 {
-				delete(s.userToSockets, userID)
-			}
-		}
-		_, stillOnline := s.userToSockets[userID]
-		userWentOffline := !stillOnline
-		onlineCount := len(s.userToSockets)
-
 		for roomID, set := range s.socketRoom {
 			if set[sid] {
 				delete(set, sid)
@@ -596,7 +583,7 @@ func (s *SocketServer) registerHandlers() {
 			if existingSID == c.ID() {
 				continue
 			}
-			if existingUID := s.socketToUser[existingSID]; existingUID == authCtx.UserID {
+			if existingUID := s.presenceStore.UserByConnection(existingSID); existingUID == authCtx.UserID {
 				staleSIDs = append(staleSIDs, existingSID)
 			}
 		}
@@ -634,7 +621,7 @@ func (s *SocketServer) registerHandlers() {
 			}
 			peerState := s.peerStates[roomID][peerSID]
 			if peerState == nil {
-				peerUID := s.socketToUser[peerSID]
+				peerUID := s.presenceStore.UserByConnection(peerSID)
 				peerState = &peerRoomState{UserID: peerUID}
 			}
 			peers = append(peers, contracts.PeerSnapshotDTO{
@@ -1247,7 +1234,7 @@ func (s *SocketServer) registerHandlers() {
 		s.userSocketMu.Lock()
 		for sid := range s.socketRoom[roomID] {
 			ps := s.peerStates[roomID][sid]
-			uid := s.socketToUser[sid]
+			uid := s.presenceStore.UserByConnection(sid)
 			if (ps != nil && ps.UserID == targetUserID) || uid == targetUserID {
 				targetSIDs = append(targetSIDs, sid)
 			}

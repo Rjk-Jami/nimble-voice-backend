@@ -42,23 +42,9 @@ func (s *StatsService) GetNetworkStats() httpx.APIResponse {
 		onlineUsers = s.socketServer.OnlineUserCount()
 	}
 
-	// If in local/dev and count is minimal, provide a minimum base count for UI fidelity
-	displayOnline := onlineUsers
-	if displayOnline < 0 {
-		displayOnline = 0 + onlineUsers
-	}
-	displayRooms := activeRooms
-	if displayRooms < 0 {
-		displayRooms = 0 + activeRooms
-	}
-	displayLangs := liveLanguages
-	if displayLangs < 0 {
-		displayLangs = 0 + liveLanguages
-	}
-
 	return httpx.SendData(http.StatusOK, "Network stats retrieved successfully", NetworkStatsResponse{
-		OnlineCount:        displayOnline,
-		ActiveRoomsCount:   displayRooms,
-		LiveLanguagesCount: displayLangs,
+		OnlineCount:        onlineUsers,
+		ActiveRoomsCount:   activeRooms,
+		LiveLanguagesCount: liveLanguages,
 	})
 }

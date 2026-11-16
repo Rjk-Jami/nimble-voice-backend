@@ -174,7 +174,7 @@ func (s *RoomService) GetRoomList(query *RoomQuery) httpx.APIResponse {
 	// Search query in title or topic
 	if query.Query != "" {
 		searchTerm := "%" + strings.ToLower(query.Query) + "%"
-		dbQuery = dbQuery.Where("LOWER(title) LIKE ? OR LOWER(topic) LIKE ? OR LOWER(topic_tag) LIKE ?", searchTerm, searchTerm, searchTerm)
+		dbQuery = dbQuery.Where("(LOWER(title) LIKE ? OR LOWER(topic) LIKE ? OR LOWER(topic_tag) LIKE ?)", searchTerm, searchTerm, searchTerm)
 	}
 
 	// Quick filter
